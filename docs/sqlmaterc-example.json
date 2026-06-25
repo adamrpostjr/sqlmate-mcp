@@ -1,0 +1,5 @@
+[
+  { "name": "Local MySQL", "type": "mysql", "host": "127.0.0.1", "port": 3306, "username": "root", "password": "", "database": "myapp" },
+  { "name": "App SQLite", "type": "sqlite", "path": "./database/app.db" },
+  { "name": "MSSQL Dev", "type": "mssql", "host": "localhost", "port": 1433, "username": "sa", "password": "YourPassword123", "database": "master", "options": { "trustServerCertificate": true } }
+]

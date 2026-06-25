@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+@import '@skeletonlabs/skeleton/themes/cerberus';
+
+html, body, #app {
+  height: 100%;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { @apply bg-surface-300-700 rounded; }
+
+/* Monospace for SQL / data */
+.font-mono { font-family: 'Cascadia Code', 'Fira Code', 'Courier New', Consolas, monospace; }
+
+/* Table row hover */
+.data-row:hover td { @apply bg-surface-50-950/50; }
+
+/* Inline edit cell */
+.cell-editing input {
+  @apply w-full bg-primary-500/10 border border-primary-500 rounded px-2 py-0.5 text-sm font-mono outline-none;
+}

@@ -1,6 +1,7 @@
 class AppStore {
   // Connection data
   connections = $state([])
+  projectRoot = $state(null)
 
   // Sidebar
   expandedConns = $state({})   // connId → boolean
@@ -68,6 +69,17 @@ class AppStore {
   }
 
   applyAgentEvent(type, data) {
+    if (type === 'connections_changed') {
+      const newIds = new Set(data.map(c => c.id))
+      for (const connId of Object.keys(this.connTables)) {
+        if (!newIds.has(connId)) delete this.connTables[connId]
+      }
+      for (const key of Object.keys(this.schemaCache)) {
+        if (!newIds.has(key.split(':')[0])) delete this.schemaCache[key]
+      }
+      this.connections = data
+      return
+    }
     if (type === 'tool_start') {
       this.agentEvents.unshift({ ...data, status: 'pending' })
       if (this.agentEvents.length > 100) this.agentEvents.length = 100

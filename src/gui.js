@@ -27,7 +27,7 @@ async function getPk(driver, table) {
   }
 }
 
-export function startGuiServer(connections, port) {
+export function startGuiServer(connections, port, projectRoot) {
   const app = express()
   app.use(express.json())
 
@@ -41,20 +41,27 @@ export function startGuiServer(connections, port) {
 
     const onStart = (data) => res.write(`event: tool_start\ndata: ${JSON.stringify(data)}\n\n`)
     const onEnd = (data) => res.write(`event: tool_end\ndata: ${JSON.stringify(data)}\n\n`)
+    const onChanged = (data) => res.write(`event: connections_changed\ndata: ${JSON.stringify(data)}\n\n`)
 
     emitter.on('tool_start', onStart)
     emitter.on('tool_end', onEnd)
+    emitter.on('connections_changed', onChanged)
 
     const keepAlive = setInterval(() => res.write(': ping\n\n'), 25000)
 
     req.on('close', () => {
       emitter.off('tool_start', onStart)
       emitter.off('tool_end', onEnd)
+      emitter.off('connections_changed', onChanged)
       clearInterval(keepAlive)
     })
   })
 
   // ── REST API ───────────────────────────────────────────────────────────────
+  app.get('/api/info', (req, res) => {
+    res.json({ projectRoot, port })
+  })
+
   app.get('/api/connections', (req, res) => {
     res.json(connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })))
   })

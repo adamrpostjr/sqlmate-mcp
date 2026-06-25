@@ -1,9 +1,9 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { AppBar } from '@skeletonlabs/skeleton-svelte'
-  import { ActivityIcon, DatabaseIcon, XIcon, AlertCircleIcon, CheckCircleIcon, Loader2Icon } from '@lucide/svelte'
+  import { ActivityIcon, DatabaseIcon, XIcon, AlertCircleIcon, CheckCircleIcon, Loader2Icon, FolderIcon } from '@lucide/svelte'
   import { store } from './lib/store.svelte.js'
-  import { loadConnections, closeTab, activateTab } from './lib/api.js'
+  import { loadConnections, loadInfo, closeTab, activateTab } from './lib/api.js'
   import Sidebar from './lib/Sidebar.svelte'
   import DataGrid from './lib/DataGrid.svelte'
   import SchemaView from './lib/SchemaView.svelte'
@@ -11,13 +11,24 @@
   import AgentFeed from './lib/AgentFeed.svelte'
   import JsonPane from './lib/JsonPane.svelte'
 
+  let es = null
+
   onMount(async () => {
     try {
       await loadConnections()
     } catch (err) {
       store.addToast('Failed to connect to sqlmate server: ' + err.message)
     }
+    try { await loadInfo() } catch {}
+
+    es = new EventSource('/api/events')
+    es.addEventListener('tool_start', (e) => store.applyAgentEvent('tool_start', JSON.parse(e.data)))
+    es.addEventListener('tool_end', (e) => store.applyAgentEvent('tool_end', JSON.parse(e.data)))
+    es.addEventListener('connections_changed', (e) => store.applyAgentEvent('connections_changed', JSON.parse(e.data)))
+    es.onerror = () => {}
   })
+
+  onDestroy(() => es?.close())
 
   function handleTabClick(e, tabId) {
     const close = e.target.closest('[data-tab-close]')
@@ -35,9 +46,17 @@
   <!-- ── AppBar ──────────────────────────────────────────────────────────── -->
   <AppBar spaceY="" padding="px-4 py-2">
     {#snippet lead()}
-      <div class="flex items-center gap-2">
-        <DatabaseIcon class="size-4 text-primary-500" />
-        <span class="font-mono font-bold tracking-widest text-sm">sqlmate</span>
+      <div class="flex flex-col">
+        <div class="flex items-center gap-2">
+          <DatabaseIcon class="size-4 text-primary-500" />
+          <span class="font-mono font-bold tracking-widest text-sm">sqlmate</span>
+        </div>
+        {#if store.projectRoot}
+          <div class="flex items-center gap-1 text-[10px] text-surface-500 font-mono leading-none mt-0.5" title={store.projectRoot}>
+            <FolderIcon class="size-2.5 flex-shrink-0" />
+            <span class="truncate max-w-48">{store.projectRoot}</span>
+          </div>
+        {/if}
       </div>
       {#if store.activeTab && !store.isSqlTab(store.activeTab)}
         <span class="hidden sm:flex items-center gap-1 text-sm font-mono text-surface-500 ml-4">

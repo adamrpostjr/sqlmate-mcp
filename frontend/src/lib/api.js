@@ -12,6 +12,11 @@ export async function api(method, path, body) {
   return data
 }
 
+export async function loadInfo() {
+  const info = await api('GET', '/api/info')
+  store.projectRoot = info.projectRoot
+}
+
 export async function loadConnections() {
   const conns = await api('GET', '/api/connections')
   store.connections = conns

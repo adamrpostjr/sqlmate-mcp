@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { randomUUID } from 'crypto'
 import { getDriver } from './drivers.js'
 import emitter from './events.js'
+import { parseConnectionInput } from './connections.js'
 
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
@@ -109,14 +110,66 @@ export async function startMcpServer(connections) {
 
   server.tool(
     'list_connections',
-    'List all detected database connections',
+    'List all configured database connections. If no connections are found, returns setup instructions.',
     {},
     async () => {
       const { id, startMs } = emitStart('list_connections', null, {})
       try {
+        if (connections.length === 0) {
+          emitEnd(id, startMs, [])
+          return ok({
+            connections: [],
+            setup_required: true,
+            message: 'No database connections are configured for this project.',
+            instructions: [
+              'Use the add_connection tool to configure a connection. Options:',
+              '  1. Connection URL:  { url: "mysql://user:pass@host:3306/dbname" }',
+              '  2. Config file:     { file: "/path/to/.sqlmaterc" }  or  { file: "/path/to/.env" }',
+              '  3. Manual params:   { type: "mysql", host: "localhost", port: 3306, username: "root", password: "secret", database: "myapp", name: "My DB" }',
+              '  Supported types: mysql, sqlite, mssql'
+            ].join('\n')
+          })
+        }
         const result = connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source }))
         emitEnd(id, startMs, result)
         return ok(result)
+      } catch (err) { emitError(id, startMs, err); return fail(err) }
+    }
+  )
+
+  server.tool(
+    'add_connection',
+    [
+      'Configure a database connection for this session.',
+      'Provide ONE of: (a) url — a connection URL like mysql://user:pass@host:3306/db or sqlite:///path/to/db.sqlite,',
+      '(b) file — an absolute path to a .sqlmaterc (JSON) or .env file containing DB credentials,',
+      '(c) individual params — type (mysql|sqlite|mssql), host, port, username, password, database, and optionally name.',
+      'After adding, call list_connections to verify.'
+    ].join(' '),
+    {
+      url: z.string().optional().describe('Connection URL (mysql://, sqlite://, sqlserver://)'),
+      file: z.string().optional().describe('Absolute path to a .sqlmaterc or .env file'),
+      type: z.enum(['mysql', 'sqlite', 'mssql']).optional().describe('Database type'),
+      host: z.string().optional().describe('Database host'),
+      port: z.number().optional().describe('Database port'),
+      username: z.string().optional().describe('Database username'),
+      password: z.string().optional().describe('Database password'),
+      database: z.string().optional().describe('Database name'),
+      path: z.string().optional().describe('File path for SQLite databases'),
+      name: z.string().optional().describe('Display name for this connection')
+    },
+    async (input) => {
+      const { password: _pw, username: _un, ...safeArgs } = input
+      const { id, startMs } = emitStart('add_connection', null, safeArgs)
+      try {
+        const added = parseConnectionInput(input, connections)
+        for (const conn of added) connections.push(conn)
+        emitter.emit('connections_changed', connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })))
+        emitEnd(id, startMs, added)
+        return ok({
+          added: added.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })),
+          message: `${added.length} connection(s) added. Use list_connections to see all configured connections.`
+        })
       } catch (err) { emitError(id, startMs, err); return fail(err) }
     }
   )

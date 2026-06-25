@@ -1,21 +1,20 @@
 <script>
-  import { onMount, onDestroy } from 'svelte'
   import {
     ActivityIcon, CheckCircle2Icon, XCircleIcon, Loader2Icon, ShieldAlertIcon,
-    DatabaseIcon, TableIcon, SearchIcon, PenLineIcon, ListIcon, Trash2Icon
+    DatabaseIcon, TableIcon, SearchIcon, PenLineIcon, ListIcon, Trash2Icon, PlugIcon
   } from '@lucide/svelte'
   import { store } from './store.svelte.js'
 
-  let es = null
   let listEl = $state(null)
   let autoScroll = $state(true)
 
   const toolMeta = {
-    list_connections: { label: 'list connections', color: 'text-surface-400', bg: 'bg-surface-500/10 border-surface-500/20', Icon: DatabaseIcon },
-    list_tables:      { label: 'list tables',      color: 'text-secondary-400', bg: 'bg-secondary-500/10 border-secondary-500/20', Icon: ListIcon },
-    describe_table:   { label: 'describe table',   color: 'text-tertiary-400', bg: 'bg-tertiary-500/10 border-tertiary-500/20', Icon: TableIcon },
-    run_query:        { label: 'run query',         color: 'text-success-400', bg: 'bg-success-500/10 border-success-500/20', Icon: SearchIcon },
-    run_write:        { label: 'run write',         color: 'text-warning-400', bg: 'bg-warning-500/10 border-warning-500/20', Icon: PenLineIcon },
+    list_connections: { label: 'list connections', color: 'text-surface-400',    bg: 'bg-surface-500/10 border-surface-500/20',    Icon: DatabaseIcon },
+    add_connection:   { label: 'add connection',   color: 'text-primary-400',    bg: 'bg-primary-500/10 border-primary-500/20',    Icon: PlugIcon },
+    list_tables:      { label: 'list tables',      color: 'text-secondary-400',  bg: 'bg-secondary-500/10 border-secondary-500/20', Icon: ListIcon },
+    describe_table:   { label: 'describe table',   color: 'text-tertiary-400',   bg: 'bg-tertiary-500/10 border-tertiary-500/20',  Icon: TableIcon },
+    run_query:        { label: 'run query',         color: 'text-success-400',    bg: 'bg-success-500/10 border-success-500/20',    Icon: SearchIcon },
+    run_write:        { label: 'run write',         color: 'text-warning-400',    bg: 'bg-warning-500/10 border-warning-500/20',    Icon: PenLineIcon },
   }
 
   function meta(tool) {
@@ -43,24 +42,6 @@
     if (!connId) return ''
     return store.connections.find(c => c.id === connId)?.name || connId
   }
-
-  onMount(() => {
-    es = new EventSource('/api/events')
-
-    es.addEventListener('tool_start', (e) => {
-      store.applyAgentEvent('tool_start', JSON.parse(e.data))
-    })
-
-    es.addEventListener('tool_end', (e) => {
-      store.applyAgentEvent('tool_end', JSON.parse(e.data))
-    })
-
-    es.onerror = () => {
-      // EventSource auto-reconnects
-    }
-  })
-
-  onDestroy(() => es?.close())
 
   // Auto-scroll to top (newest events are unshifted)
   $effect(() => {

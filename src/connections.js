@@ -6,7 +6,7 @@ export function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
-function parseConnectionUrl(urlStr) {
+export function parseConnectionUrl(urlStr) {
   try {
     const url = new URL(urlStr)
     const scheme = url.protocol.replace(':', '').toLowerCase()
@@ -37,7 +37,7 @@ function parseConnectionUrl(urlStr) {
   }
 }
 
-function inferTypeFromEnv(parsed) {
+export function inferTypeFromEnv(parsed) {
   const conn = (parsed.DB_CONNECTION || '').toLowerCase()
   if (conn === 'mysql' || conn === 'mariadb') return 'mysql'
   if (conn === 'sqlite') return 'sqlite'
@@ -50,7 +50,7 @@ function inferTypeFromEnv(parsed) {
   return null
 }
 
-function buildFromEnv(parsed) {
+export function buildFromEnv(parsed) {
   const urlStr = parsed.DATABASE_URL || parsed.DB_URL
   if (urlStr) {
     const conn = parseConnectionUrl(urlStr)
@@ -82,11 +82,11 @@ function buildFromEnv(parsed) {
   }
 }
 
-function normalizeRcEntry(entry) {
+export function normalizeRcEntry(entry) {
   return {
     name: entry.name || 'Unnamed',
     type: (entry.type || '').toLowerCase(),
-    source: '.sqlmaterc',
+    source: entry.source ?? '.sqlmaterc',
     host: entry.host,
     port: entry.port,
     username: entry.username,
@@ -95,6 +95,54 @@ function normalizeRcEntry(entry) {
     path: entry.path,
     options: entry.options || {}
   }
+}
+
+export function assignId(conn, existing) {
+  const base = slugify(conn.name || 'connection')
+  const usedIds = new Set(existing.map(c => c.id))
+  if (!usedIds.has(base)) { conn.id = base; return conn }
+  let i = 2
+  while (usedIds.has(`${base}-${i}`)) i++
+  conn.id = `${base}-${i}`
+  return conn
+}
+
+export function parseConnectionInput(input, existing = []) {
+  if (input.file) {
+    const raw = fs.readFileSync(input.file, 'utf8')
+    const trimmed = raw.trimStart()
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      const parsed = JSON.parse(raw)
+      const entries = Array.isArray(parsed) ? parsed : [parsed]
+      const result = []
+      for (const entry of entries) {
+        const conn = normalizeRcEntry({ ...entry, source: input.file })
+        result.push(assignId(conn, [...existing, ...result]))
+      }
+      return result
+    }
+    const parsed = parseEnv(raw)
+    const conn = buildFromEnv(parsed)
+    if (!conn) throw new Error('No recognizable DB config found in file')
+    conn.source = input.file
+    return [assignId(conn, existing)]
+  }
+
+  if (input.url) {
+    const conn = parseConnectionUrl(input.url)
+    if (!conn) throw new Error('Unrecognized URL scheme. Supported: mysql://, sqlite://, sqlserver://')
+    if (input.name) conn.name = input.name
+    conn.source = 'tool'
+    return [assignId(conn, existing)]
+  }
+
+  if (!input.type) throw new Error('Provide url, file, or type + connection params')
+  const type = input.type.toLowerCase()
+  if (!['mysql', 'sqlite', 'mssql'].includes(type)) {
+    throw new Error(`Unsupported type "${input.type}". Use: mysql, sqlite, mssql`)
+  }
+  const conn = normalizeRcEntry({ ...input, source: 'tool' })
+  return [assignId(conn, existing)]
 }
 
 export function loadConnections(projectRoot) {

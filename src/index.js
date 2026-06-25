@@ -10,7 +10,27 @@ import { startMcpServer } from './mcp.js'
 import { startGuiServer } from './gui.js'
 import { closeAll } from './drivers.js'
 
-const projectRoot = process.env.SQLMATE_PROJECT_ROOT ?? process.cwd()
+function hasSqlmateConfig(dir) {
+  if (fs.existsSync(path.join(dir, '.sqlmaterc'))) return true
+  const envPath = path.join(dir, '.env')
+  if (!fs.existsSync(envPath)) return false
+  try {
+    const raw = fs.readFileSync(envPath, 'utf8')
+    return /DB_CONNECTION|DB_HOST|DB_DATABASE|DATABASE_URL|DB_URL|DB_PATH|DB_USER|DB_PASS|DB_NAME|DB_PORT/i.test(raw)
+  } catch { return false }
+}
+
+function findProjectRoot(start) {
+  let dir = start
+  while (true) {
+    if (hasSqlmateConfig(dir)) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) return start
+    dir = parent
+  }
+}
+
+const projectRoot = process.env.SQLMATE_PROJECT_ROOT ?? findProjectRoot(process.cwd())
 const port = parseInt(process.env.SQLMATE_PORT) || 4737
 
 const connections = loadConnections(projectRoot)
@@ -40,10 +60,10 @@ process.on('SIGTERM', shutdown)
 
 await Promise.all([
   startMcpServer(connections),
-  startGuiServer(connections, port)
+  startGuiServer(connections, port, projectRoot)
 ])
 
-if (process.env.SQLMATE_NO_OPEN !== '1') {
+if (process.env.SQLMATE_NO_OPEN !== '1' && connections.length > 0) {
   try {
     const { default: open } = await import('open')
     await open(`http://localhost:${port}`)

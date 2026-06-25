@@ -34,15 +34,47 @@ Connect Claude to your MySQL, MariaDB, SQLite, or MSSQL databases. sqlmate-mcp r
 npm install -g sqlmate-mcp
 ```
 
-### 2. Register with Claude Code
+### 2. Register with your editor
+
+**Claude Code**
 
 ```bash
 claude mcp add --transport stdio sqlmate-mcp sqlmate-mcp
 ```
 
-That's it. Claude Code now has access to your databases.
+**Zed**
 
-> **First time?** Run `sqlmate-mcp` once manually to verify it starts and prints the detected connections.
+Open your Zed `settings.json` (<kbd>Cmd/Ctrl</kbd> + <kbd>,</kbd>) and add a `context_servers` entry:
+
+```json
+{
+  "context_servers": {
+    "sqlmate-mcp": {
+      "command": "sqlmate-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+If you need to point at a specific project's database, pass `SQLMATE_PROJECT_ROOT` in the `env` block:
+
+```json
+{
+  "context_servers": {
+    "sqlmate-mcp": {
+      "command": "sqlmate-mcp",
+      "args": [],
+      "env": {
+        "SQLMATE_PROJECT_ROOT": "/absolute/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+Once added, the sqlmate-mcp tools will appear in the Zed Agent Panel.
 
 ### 3. Configure your connections
 

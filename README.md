@@ -26,37 +26,44 @@ Connect Claude to your MySQL, MariaDB, SQLite, or MSSQL databases. sqlmate-mcp r
 
 ---
 
-## Installation
+## Setup
+
+### 1. Install
+
+```bash
+npm install -g sqlmate-mcp
+```
+
+### 2. Register with Claude Code
+
+```bash
+claude mcp add --transport stdio sqlmate-mcp sqlmate-mcp
+```
+
+That's it. Claude Code now has access to your databases.
+
+> **First time?** Run `sqlmate-mcp` once manually to verify it starts and prints the detected connections.
+
+### 3. Configure your connections
+
+sqlmate-mcp reads connections from the **root of whichever project you open in Claude Code** (the directory you run `claude` from). No global config needed — each project uses its own `.env` or `.sqlmaterc`. See [Connection Setup](#connection-setup) below.
+
+---
+
+## Manual Installation (from source)
 
 ```bash
 git clone https://github.com/adamrpostjr/sqlmate-mcp.git
 cd sqlmate-mcp
 npm install
-```
-
-To also build the browser GUI (required for the GUI to work):
-
-```bash
 npm run build
 ```
 
----
-
-## Adding to Claude Code
-
-Start the server once — it will print the exact registration command for your system:
-
-```bash
-node src/index.js
-```
-
-Copy the printed command and run it, e.g.:
+Then register using the full path:
 
 ```bash
 claude mcp add --transport stdio sqlmate-mcp node /absolute/path/to/src/index.js
 ```
-
-After that, Claude Code will have access to your databases in every session.
 
 ---
 

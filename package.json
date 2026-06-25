@@ -1,11 +1,15 @@
 {
   "name": "sqlmate-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-config SQL database MCP server + browser GUI for Claude Code",
   "type": "module",
-  "bin": { "sqlmate-mcp": "src/index.js" },
+  "bin": {
+    "sqlmate-mcp": "src/index.js"
+  },
   "main": "src/index.js",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",

@@ -59,7 +59,7 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 await Promise.all([
-  startMcpServer(connections),
+  startMcpServer(connections, projectRoot),
   startGuiServer(connections, port, projectRoot)
 ])
 

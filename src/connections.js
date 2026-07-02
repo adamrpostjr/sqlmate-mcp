@@ -117,6 +117,7 @@ export function parseConnectionInput(input, existing = []) {
       const result = []
       for (const entry of entries) {
         const conn = normalizeRcEntry({ ...entry, source: input.file })
+        conn.projectRoot = null
         result.push(assignId(conn, [...existing, ...result]))
       }
       return result
@@ -125,6 +126,7 @@ export function parseConnectionInput(input, existing = []) {
     const conn = buildFromEnv(parsed)
     if (!conn) throw new Error('No recognizable DB config found in file')
     conn.source = input.file
+    conn.projectRoot = null
     return [assignId(conn, existing)]
   }
 
@@ -133,6 +135,7 @@ export function parseConnectionInput(input, existing = []) {
     if (!conn) throw new Error('Unrecognized URL scheme. Supported: mysql://, sqlite://, sqlserver://')
     if (input.name) conn.name = input.name
     conn.source = 'tool'
+    conn.projectRoot = null
     return [assignId(conn, existing)]
   }
 
@@ -142,7 +145,81 @@ export function parseConnectionInput(input, existing = []) {
     throw new Error(`Unsupported type "${input.type}". Use: mysql, sqlite, mssql`)
   }
   const conn = normalizeRcEntry({ ...input, source: 'tool' })
+  conn.projectRoot = null
   return [assignId(conn, existing)]
+}
+
+// DB-defining fields — if any of these change for a connection, its cached
+// driver must be invalidated because it points at a different physical target.
+const CONFIG_FIELDS = ['type', 'host', 'port', 'username', 'password', 'database', 'path', 'source']
+
+// Identity of a connection within a single project: the file it came from plus
+// the physical database it targets. Stable across reloads of the same project.
+function connIdentity(conn) {
+  return `${conn.source}|${conn.database ?? ''}|${conn.path ?? ''}`
+}
+
+function sameConfig(a, b) {
+  return CONFIG_FIELDS.every(f => a[f] === b[f])
+}
+
+// Resolve a connection id to a connection, scoped to the caller's project.
+// Connections tagged projectRoot: null are global (visible in every project).
+// When projectRoot is omitted (legacy callers), falls back to an id-only match.
+export function resolveConnection(connections, id, projectRoot) {
+  const matches = connections.filter(c => c.id === id)
+  if (matches.length === 0) throw new Error(`Connection not found: ${id}`)
+  if (projectRoot == null) return matches[0]
+  const scoped = matches.find(c => c.projectRoot == null || c.projectRoot === projectRoot)
+  if (!scoped) throw new Error(`Connection not found in this project: ${id}`)
+  return scoped
+}
+
+// Reload a project's connections and reconcile them into the shared list,
+// idempotently. Existing connections keep their id (so the id-keyed driver
+// cache stays valid); only brand-new connections get a fresh id. Connections
+// dropped from config, or whose DB-defining config changed, are reported via
+// onRemoved so the caller can invalidate their cached drivers.
+// Returns { added, removed } (removed is a list of connection ids).
+export function mergeProjectConnections(connections, projectRoot, onRemoved = () => {}) {
+  const fresh = loadConnections(projectRoot)  // sources already absolutized + tagged
+
+  const added = []
+  const removed = []
+  const freshIdentities = new Set(fresh.map(connIdentity))
+
+  // 1. Remove entries of this project that no longer appear in config.
+  for (const existing of connections.filter(c => c.projectRoot === projectRoot)) {
+    if (!freshIdentities.has(connIdentity(existing))) {
+      connections.splice(connections.indexOf(existing), 1)
+      removed.push(existing.id)
+      onRemoved(existing.id)
+    }
+  }
+
+  // 2. Upsert fresh entries.
+  for (const conn of fresh) {
+    const existing = connections.find(
+      c => c.projectRoot === projectRoot && connIdentity(c) === connIdentity(conn)
+    )
+    if (existing) {
+      // Same identity: if any DB-defining field changed, update in place
+      // (keeping the id) and invalidate the now-stale cached driver.
+      if (!sameConfig(existing, conn)) {
+        for (const f of CONFIG_FIELDS) existing[f] = conn[f]
+        existing.name = conn.name
+        onRemoved(existing.id)
+      }
+    } else {
+      // Brand-new connection: assign a collision-safe id against the whole
+      // array (ids must be globally unique for the driver cache), then push.
+      assignId(conn, connections)
+      connections.push(conn)
+      added.push(conn)
+    }
+  }
+
+  return { added, removed }
 }
 
 export function loadConnections(projectRoot) {
@@ -177,6 +254,12 @@ export function loadConnections(projectRoot) {
     const base = slugify(conn.name || 'connection')
     seen[base] = (seen[base] || 0) + 1
     conn.id = seen[base] === 1 ? base : `${base}-${seen[base]}`
+    conn.projectRoot = projectRoot
+    // Absolutize the source at load time so a connection's identity is stable
+    // whether it came from startup or from a later mergeProjectConnections reload.
+    if (conn.source === '.env' || conn.source === '.sqlmaterc') {
+      conn.source = path.join(projectRoot, conn.source)
+    }
   }
 
   return all

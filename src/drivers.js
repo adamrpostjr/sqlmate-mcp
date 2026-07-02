@@ -105,7 +105,7 @@ async function buildSqliteDriver(conn) {
   const { DatabaseSync } = await import('node:sqlite')
   const dbPath = conn.path === ':memory:'
     ? ':memory:'
-    : path.resolve(projectRoot, conn.path)
+    : path.resolve(conn.projectRoot ?? projectRoot, conn.path)
   const db = new DatabaseSync(dbPath)
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
@@ -271,6 +271,16 @@ export async function getDriver(conn) {
 
   drivers.set(conn.id, driver)
   return driver
+}
+
+// Drop a cached driver synchronously (so the next getDriver rebuilds it) and
+// close the old one in the background. Use when a connection is removed or its
+// DB-defining config changed, so the id-keyed cache never serves a stale driver.
+export function invalidateDriver(connectionId) {
+  const driver = drivers.get(connectionId)
+  drivers.delete(connectionId)
+  pools.delete(connectionId)
+  if (driver) Promise.resolve().then(() => driver.close()).catch(() => {})
 }
 
 export async function reconnect(connectionId) {

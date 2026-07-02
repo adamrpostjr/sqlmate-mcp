@@ -2,6 +2,7 @@ import express from 'express'
 import { fileURLToPath } from 'url'
 import path from 'path'
 import { getDriver, reconnect as reconnectDriver } from './drivers.js'
+import { resolveConnection } from './connections.js'
 import emitter from './events.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -11,10 +12,8 @@ function apiErr(res, err, status = 500) {
   res.status(status).json({ error: err?.message || String(err) })
 }
 
-function findConn(connections, id) {
-  const conn = connections.find(c => c.id === id)
-  if (!conn) throw new Error(`Connection not found: ${id}`)
-  return conn
+function findConn(connections, id, projectRoot) {
+  return resolveConnection(connections, id, projectRoot)
 }
 
 async function getPk(driver, table) {
@@ -31,6 +30,11 @@ export function startGuiServer(connections, port, projectRoot) {
   const app = express()
   app.use(express.json())
 
+  // The GUI shows the startup project's connections plus any global (tool-added) ones.
+  const scoped = () => connections
+    .filter(c => c.projectRoot == null || c.projectRoot === projectRoot)
+    .map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source }))
+
   // ── SSE live events ────────────────────────────────────────────────────────
   app.get('/api/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -41,7 +45,9 @@ export function startGuiServer(connections, port, projectRoot) {
 
     const onStart = (data) => res.write(`event: tool_start\ndata: ${JSON.stringify(data)}\n\n`)
     const onEnd = (data) => res.write(`event: tool_end\ndata: ${JSON.stringify(data)}\n\n`)
-    const onChanged = (data) => res.write(`event: connections_changed\ndata: ${JSON.stringify(data)}\n\n`)
+    // Re-derive from the live array so the GUI only ever sees its own project scope,
+    // regardless of what the emitter's payload contains.
+    const onChanged = () => res.write(`event: connections_changed\ndata: ${JSON.stringify(scoped())}\n\n`)
 
     emitter.on('tool_start', onStart)
     emitter.on('tool_end', onEnd)
@@ -63,12 +69,12 @@ export function startGuiServer(connections, port, projectRoot) {
   })
 
   app.get('/api/connections', (req, res) => {
-    res.json(connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })))
+    res.json(scoped())
   })
 
   app.get('/api/connections/:id/tables', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       res.json(await driver.listTables())
     } catch (err) { apiErr(res, err) }
@@ -76,7 +82,7 @@ export function startGuiServer(connections, port, projectRoot) {
 
   app.get('/api/connections/:id/tables/:table/schema', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       res.json(await driver.describeTable(req.params.table))
     } catch (err) { apiErr(res, err) }
@@ -84,7 +90,7 @@ export function startGuiServer(connections, port, projectRoot) {
 
   app.get('/api/connections/:id/tables/:table/data', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       const limit = Math.min(parseInt(req.query.limit) || 100, 1000)
       const offset = parseInt(req.query.offset) || 0
@@ -97,7 +103,7 @@ export function startGuiServer(connections, port, projectRoot) {
     try {
       const { pk, pkValue, column, value } = req.body
       if (!pk || pkValue === undefined || !column) return apiErr(res, new Error('pk, pkValue, column required'), 400)
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       res.json(await driver.updateRow(req.params.table, pk, pkValue, column, value))
     } catch (err) { apiErr(res, err) }
@@ -107,7 +113,7 @@ export function startGuiServer(connections, port, projectRoot) {
     try {
       const { pk, pkValue } = req.body
       if (!pk || pkValue === undefined) return apiErr(res, new Error('pk and pkValue required'), 400)
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       res.json(await driver.deleteRow(req.params.table, pk, pkValue))
     } catch (err) { apiErr(res, err) }
@@ -117,7 +123,7 @@ export function startGuiServer(connections, port, projectRoot) {
     try {
       const { sql } = req.body
       if (!sql) return res.json({ rows: [], columns: [], error: 'No SQL provided' })
-      const conn = findConn(connections, req.params.id)
+      const conn = findConn(connections, req.params.id, projectRoot)
       const driver = await getDriver(conn)
       try {
         res.json(await driver.runQuery(sql))
@@ -129,7 +135,7 @@ export function startGuiServer(connections, port, projectRoot) {
 
   app.post('/api/connections/:id/reconnect', async (req, res) => {
     try {
-      findConn(connections, req.params.id)
+      findConn(connections, req.params.id, projectRoot)
       await reconnectDriver(req.params.id)
       res.json({ ok: true })
     } catch (err) { apiErr(res, err) }

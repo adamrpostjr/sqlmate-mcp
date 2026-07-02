@@ -2,9 +2,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { randomUUID } from 'crypto'
-import { getDriver } from './drivers.js'
+import { getDriver, invalidateDriver } from './drivers.js'
 import emitter from './events.js'
-import { parseConnectionInput } from './connections.js'
+import { parseConnectionInput, mergeProjectConnections, resolveConnection } from './connections.js'
 
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
@@ -14,10 +14,8 @@ function fail(err) {
   return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true }
 }
 
-function findConn(connections, id) {
-  const conn = connections.find(c => c.id === id)
-  if (!conn) throw new Error(`Connection not found: ${id}`)
-  return conn
+function serializeConn(c) {
+  return { id: c.id, name: c.name, type: c.type, source: c.source }
 }
 
 function emitStart(tool, connectionId, args) {
@@ -105,17 +103,39 @@ function assessRisk(sql) {
   return { risky: false }
 }
 
-export async function startMcpServer(connections) {
+export async function startMcpServer(connections, projectRoot) {
   const server = new McpServer({ name: 'sqlmate-mcp', version: '1.0.0' })
+
+  // Connections visible to a project: its own file-derived connections plus any
+  // global (tool-added) ones. A tool call's project_root wins; otherwise the
+  // startup project root is used so single-project (legacy) callers still work.
+  const scopeFor = (root) => connections.filter(c => c.projectRoot == null || c.projectRoot === (root ?? projectRoot))
 
   server.tool(
     'list_connections',
-    'List all configured database connections. If no connections are found, returns setup instructions.',
-    {},
-    async () => {
-      const { id, startMs } = emitStart('list_connections', null, {})
+    [
+      'List all configured database connections.',
+      'IMPORTANT: Always pass project_root set to the absolute path of the current project directory.',
+      'This ensures the correct database connections are loaded for the active project,',
+      'since the server may be shared across multiple projects.',
+      'If no connections are found, returns setup instructions.'
+    ].join(' '),
+    {
+      project_root: z.string().optional().describe(
+        'Absolute path to the current project directory. Always provide this so connections are loaded for the right project.'
+      )
+    },
+    async ({ project_root } = {}) => {
+      const { id, startMs } = emitStart('list_connections', null, { project_root })
       try {
-        if (connections.length === 0) {
+        if (project_root) {
+          const { added, removed } = mergeProjectConnections(connections, project_root, invalidateDriver)
+          if (added.length > 0 || removed.length > 0) {
+            emitter.emit('connections_changed', connections.map(serializeConn))
+          }
+        }
+        const visible = scopeFor(project_root)
+        if (visible.length === 0) {
           emitEnd(id, startMs, [])
           return ok({
             connections: [],
@@ -130,7 +150,7 @@ export async function startMcpServer(connections) {
             ].join('\n')
           })
         }
-        const result = connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source }))
+        const result = visible.map(serializeConn)
         emitEnd(id, startMs, result)
         return ok(result)
       } catch (err) { emitError(id, startMs, err); return fail(err) }
@@ -164,10 +184,10 @@ export async function startMcpServer(connections) {
       try {
         const added = parseConnectionInput(input, connections)
         for (const conn of added) connections.push(conn)
-        emitter.emit('connections_changed', connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })))
+        emitter.emit('connections_changed', connections.map(serializeConn))
         emitEnd(id, startMs, added)
         return ok({
-          added: added.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source })),
+          added: added.map(serializeConn),
           message: `${added.length} connection(s) added. Use list_connections to see all configured connections.`
         })
       } catch (err) { emitError(id, startMs, err); return fail(err) }
@@ -177,11 +197,14 @@ export async function startMcpServer(connections) {
   server.tool(
     'list_tables',
     'List all tables in a database connection',
-    { connectionId: z.string().describe('Connection ID from list_connections') },
-    async ({ connectionId }) => {
+    {
+      connectionId: z.string().describe('Connection ID from list_connections'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
+    },
+    async ({ connectionId, project_root }) => {
       const { id, startMs } = emitStart('list_tables', connectionId, { connectionId })
       try {
-        const conn = findConn(connections, connectionId)
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.listTables()
         emitEnd(id, startMs, result)
@@ -195,12 +218,13 @@ export async function startMcpServer(connections) {
     'Get column schema for a table',
     {
       connectionId: z.string().describe('Connection ID from list_connections'),
-      table: z.string().describe('Table name')
+      table: z.string().describe('Table name'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
-    async ({ connectionId, table }) => {
+    async ({ connectionId, table, project_root }) => {
       const { id, startMs } = emitStart('describe_table', connectionId, { table })
       try {
-        const conn = findConn(connections, connectionId)
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.describeTable(table)
         emitEnd(id, startMs, result)
@@ -214,12 +238,13 @@ export async function startMcpServer(connections) {
     'Run a read-only SQL query (SELECT, EXPLAIN, SHOW, PRAGMA). Write statements are rejected.',
     {
       connectionId: z.string().describe('Connection ID from list_connections'),
-      sql: z.string().describe('SQL query to run')
+      sql: z.string().describe('SQL query to run'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
-    async ({ connectionId, sql }) => {
+    async ({ connectionId, sql, project_root }) => {
       const { id, startMs } = emitStart('run_query', connectionId, { sql: sql.slice(0, 300) })
       try {
-        const conn = findConn(connections, connectionId)
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.runQuery(sql)
         emitEnd(id, startMs, result)
@@ -242,9 +267,10 @@ export async function startMcpServer(connections) {
       sql: z.string().describe('SQL statement to execute'),
       confirm: z.boolean().optional().describe(
         'Set to true only after the user has explicitly approved the risk shown by a prior call to this tool'
-      )
+      ),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
-    async ({ connectionId, sql, confirm }) => {
+    async ({ connectionId, sql, confirm, project_root }) => {
       const { id, startMs } = emitStart('run_write', connectionId, { sql: sql.slice(0, 300) })
       try {
         const { risky, reason } = assessRisk(sql)
@@ -264,7 +290,7 @@ export async function startMcpServer(connections) {
           })
         }
 
-        const conn = findConn(connections, connectionId)
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.runWrite(sql)
         emitEnd(id, startMs, result)

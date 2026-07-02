@@ -1,6 +1,6 @@
 {
   "name": "sqlmate-mcp",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Zero-config SQL database MCP server + browser GUI for Claude Code",
   "type": "module",
   "bin": {
@@ -34,7 +34,8 @@
   },
   "scripts": {
     "build": "npm --prefix frontend install && npm --prefix frontend run build",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

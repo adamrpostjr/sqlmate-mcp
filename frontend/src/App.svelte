@@ -12,6 +12,7 @@
   import JsonPane from './lib/JsonPane.svelte'
 
   let es = null
+  let wasDown = false
 
   onMount(async () => {
     try {
@@ -25,7 +26,14 @@
     es.addEventListener('tool_start', (e) => store.applyAgentEvent('tool_start', JSON.parse(e.data)))
     es.addEventListener('tool_end', (e) => store.applyAgentEvent('tool_end', JSON.parse(e.data)))
     es.addEventListener('connections_changed', (e) => store.applyAgentEvent('connections_changed', JSON.parse(e.data)))
-    es.onerror = () => {}
+    es.onopen = () => { wasDown = false }
+    es.onerror = () => {
+      // EventSource auto-reconnects; surface a single toast per outage.
+      if (!wasDown) {
+        wasDown = true
+        store.addToast('Lost live connection to sqlmate server; retrying…')
+      }
+    }
   })
 
   onDestroy(() => es?.close())

@@ -68,15 +68,35 @@ class AppStore {
     if (idx !== -1) this.toasts.splice(idx, 1)
   }
 
+  // Remove all state tied to a connection that no longer exists.
+  pruneConnection(connId) {
+    delete this.connTables[connId]
+    delete this.expandedConns[connId]
+    for (const key of Object.keys(this.schemaCache)) {
+      if (key.split(':')[0] === connId) delete this.schemaCache[key]
+    }
+    // Close any tabs belonging to this connection and drop their per-tab state.
+    const removedTabIds = this.openTabs.filter(t => t.connId === connId).map(t => t.id)
+    if (removedTabIds.length) {
+      this.openTabs = this.openTabs.filter(t => t.connId !== connId)
+      for (const tabId of removedTabIds) {
+        delete this.currentPage[tabId]
+        delete this.tableData[tabId]
+        delete this.sqlContent[tabId]
+        delete this.sqlResults[tabId]
+        delete this.loading[tabId]
+        if (this.activeTabId === tabId) {
+          this.activeTabId = this.openTabs[0]?.id || null
+        }
+      }
+    }
+  }
+
   applyAgentEvent(type, data) {
     if (type === 'connections_changed') {
       const newIds = new Set(data.map(c => c.id))
-      for (const connId of Object.keys(this.connTables)) {
-        if (!newIds.has(connId)) delete this.connTables[connId]
-      }
-      for (const key of Object.keys(this.schemaCache)) {
-        if (!newIds.has(key.split(':')[0])) delete this.schemaCache[key]
-      }
+      const goneIds = this.connections.map(c => c.id).filter(id => !newIds.has(id))
+      for (const connId of goneIds) this.pruneConnection(connId)
       this.connections = data
       return
     }

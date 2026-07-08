@@ -5,6 +5,12 @@ const drivers = new Map()
 
 const projectRoot = process.env.SQLMATE_PROJECT_ROOT ?? process.cwd()
 
+// Namespace the driver/pool cache by project so that connections sharing an id
+// across two different projects (e.g. same slugified name) never collide.
+function keyOf(conn) {
+  return `${conn.projectRoot ?? 'global'}::${conn.id}`
+}
+
 function stripComments(sql) {
   return sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
 }
@@ -42,7 +48,7 @@ async function buildMysqlDriver(conn) {
     connectionLimit: 5,
     multipleStatements: false
   })
-  pools.set(conn.id, pool)
+  pools.set(keyOf(conn), pool)
 
   return {
     async listTables() {
@@ -109,7 +115,7 @@ async function buildSqliteDriver(conn) {
   const db = new DatabaseSync(dbPath)
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
-  pools.set(conn.id, db)
+  pools.set(keyOf(conn), db)
 
   return {
     async listTables() {
@@ -178,7 +184,7 @@ async function buildMssqlDriver(conn) {
       ...conn.options
     }
   }).connect()
-  pools.set(conn.id, pool)
+  pools.set(keyOf(conn), pool)
 
   return {
     async listTables() {
@@ -256,7 +262,8 @@ async function buildMssqlDriver(conn) {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function getDriver(conn) {
-  if (drivers.has(conn.id)) return drivers.get(conn.id)
+  const key = keyOf(conn)
+  if (drivers.has(key)) return drivers.get(key)
 
   let driver
   if (conn.type === 'mysql' || conn.type === 'mariadb') {
@@ -269,26 +276,30 @@ export async function getDriver(conn) {
     throw new Error(`Unsupported database type: ${conn.type}`)
   }
 
-  drivers.set(conn.id, driver)
+  drivers.set(key, driver)
   return driver
 }
 
 // Drop a cached driver synchronously (so the next getDriver rebuilds it) and
 // close the old one in the background. Use when a connection is removed or its
-// DB-defining config changed, so the id-keyed cache never serves a stale driver.
-export function invalidateDriver(connectionId) {
-  const driver = drivers.get(connectionId)
-  drivers.delete(connectionId)
-  pools.delete(connectionId)
+// DB-defining config changed, so the project-scoped cache never serves a stale
+// driver. Takes the connection object (not just its id) since the cache key
+// includes the project root.
+export function invalidateDriver(conn) {
+  const key = keyOf(conn)
+  const driver = drivers.get(key)
+  drivers.delete(key)
+  pools.delete(key)
   if (driver) Promise.resolve().then(() => driver.close()).catch(() => {})
 }
 
-export async function reconnect(connectionId) {
-  if (drivers.has(connectionId)) {
-    try { await drivers.get(connectionId).close() } catch {}
-    drivers.delete(connectionId)
+export async function reconnect(conn) {
+  const key = keyOf(conn)
+  if (drivers.has(key)) {
+    try { await drivers.get(key).close() } catch {}
+    drivers.delete(key)
   }
-  pools.delete(connectionId)
+  pools.delete(key)
 }
 
 export async function closeAll() {

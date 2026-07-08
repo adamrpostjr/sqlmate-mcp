@@ -2,18 +2,14 @@ import express from 'express'
 import { fileURLToPath } from 'url'
 import path from 'path'
 import { getDriver, reconnect as reconnectDriver } from './drivers.js'
-import { resolveConnection } from './connections.js'
 import emitter from './events.js'
+import { APP, PROTOCOL_VERSION } from './protocol.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = path.join(__dirname, '..', 'public')
 
 function apiErr(res, err, status = 500) {
   res.status(status).json({ error: err?.message || String(err) })
-}
-
-function findConn(connections, id, projectRoot) {
-  return resolveConnection(connections, id, projectRoot)
 }
 
 async function getPk(driver, table) {
@@ -26,14 +22,9 @@ async function getPk(driver, table) {
   }
 }
 
-export function startGuiServer(connections, port, projectRoot) {
+export function startGuiServer(registry, port) {
   const app = express()
   app.use(express.json())
-
-  // The GUI shows the startup project's connections plus any global (tool-added) ones.
-  const scoped = () => connections
-    .filter(c => c.projectRoot == null || c.projectRoot === projectRoot)
-    .map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source }))
 
   // ── SSE live events ────────────────────────────────────────────────────────
   app.get('/api/events', (req, res) => {
@@ -43,54 +34,116 @@ export function startGuiServer(connections, port, projectRoot) {
     res.setHeader('X-Accel-Buffering', 'no')
     res.flushHeaders()
 
-    const onStart = (data) => res.write(`event: tool_start\ndata: ${JSON.stringify(data)}\n\n`)
-    const onEnd = (data) => res.write(`event: tool_end\ndata: ${JSON.stringify(data)}\n\n`)
-    // Re-derive from the live array so the GUI only ever sees its own project scope,
-    // regardless of what the emitter's payload contains.
-    const onChanged = () => res.write(`event: connections_changed\ndata: ${JSON.stringify(scoped())}\n\n`)
+    // Scope everything to the requesting browser's own project: in the shared
+    // multi-project GUI, another attached project's SQL text, error messages,
+    // and even its existence/path must never reach a tab that isn't theirs.
+    // A missing or empty projectId fails closed (matches nothing) — nothing
+    // needs an "unfiltered" fallback since the frontend always sends its own
+    // project's id, and this is the one place that decides what a tab can see.
+    const projectId = req.query.projectId
+    const isMine = (data) => data.projectId === projectId
 
-    emitter.on('tool_start', onStart)
-    emitter.on('tool_end', onEnd)
-    emitter.on('connections_changed', onChanged)
+    const onStart = (data) => { if (isMine(data)) res.write(`event: tool_start\ndata: ${JSON.stringify(data)}\n\n`) }
+    const onEnd = (data) => { if (isMine(data)) res.write(`event: tool_end\ndata: ${JSON.stringify(data)}\n\n`) }
+    const onChanged = (snapshot) => {
+      const mine = snapshot.filter(isMine)
+      res.write(`event: projects_changed\ndata: ${JSON.stringify(mine)}\n\n`)
+    }
+
+    emitter.on('feed_tool_start', onStart)
+    emitter.on('feed_tool_end', onEnd)
+    emitter.on('projects_changed', onChanged)
+
+    // Rehydrate a (re)connecting browser with the current state immediately.
+    onChanged(registry.snapshot())
 
     const keepAlive = setInterval(() => res.write(': ping\n\n'), 25000)
 
     req.on('close', () => {
-      emitter.off('tool_start', onStart)
-      emitter.off('tool_end', onEnd)
-      emitter.off('connections_changed', onChanged)
+      emitter.off('feed_tool_start', onStart)
+      emitter.off('feed_tool_end', onEnd)
+      emitter.off('projects_changed', onChanged)
       clearInterval(keepAlive)
     })
   })
 
   // ── REST API ───────────────────────────────────────────────────────────────
   app.get('/api/info', (req, res) => {
-    res.json({ projectRoot, port })
+    res.json({
+      app: APP,
+      protocolVersion: PROTOCOL_VERSION,
+      port,
+      pid: process.pid,
+      selfProjectId: registry.getSelfProjectId(),
+      projects: registry.snapshot()
+    })
   })
 
-  app.get('/api/connections', (req, res) => {
-    res.json(scoped())
+  // ── Host protocol (attach.js uplinks talk to these) ─────────────────────────
+  app.post('/api/host/register', (req, res) => {
+    const { protocolVersion, projectRoot, connections } = req.body || {}
+    if (protocolVersion !== PROTOCOL_VERSION) {
+      return res.status(409).json({ error: 'protocol mismatch', hostProtocolVersion: PROTOCOL_VERSION })
+    }
+    if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+      return apiErr(res, new Error('projectRoot is required'), 400)
+    }
+    const { projectId } = registry.register({ projectRoot, connections: connections || [] })
+    res.json({ ok: true, projectId })
   })
 
-  app.get('/api/connections/:id/tables', async (req, res) => {
+  app.post('/api/host/heartbeat', (req, res) => {
+    const { projectId } = req.body || {}
+    if (registry.heartbeat(projectId)) {
+      res.json({ ok: true })
+    } else {
+      res.status(404).json({ ok: false, unknownProject: true })
+    }
+  })
+
+  app.post('/api/host/events', (req, res) => {
+    const { type, data } = req.body || {}
+    if (type !== 'tool_start' && type !== 'tool_end') {
+      return apiErr(res, new Error('type must be tool_start or tool_end'), 400)
+    }
+    registry.handleToolEvent(type, data)
+    res.json({ ok: true })
+  })
+
+  // Idempotent: removing an unknown project still returns ok. Note: dismissing
+  // a *live* project (one still heartbeating) resurrects it within one
+  // heartbeat interval — the ✕ in the UI is "remove stale now", not a ban.
+  app.delete('/api/host/projects/:projectId', (req, res) => {
+    registry.remove(req.params.projectId)
+    res.json({ ok: true })
+  })
+
+  // ── Project-scoped connection routes ────────────────────────────────────────
+  app.get('/api/projects/:projectId/connections', (req, res) => {
+    const project = registry.snapshot().find(p => p.projectId === req.params.projectId)
+    if (!project) return apiErr(res, new Error('Project not found'), 404)
+    res.json(project.connections)
+  })
+
+  app.get('/api/projects/:projectId/connections/:id/tables', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       res.json(await driver.listTables())
     } catch (err) { apiErr(res, err) }
   })
 
-  app.get('/api/connections/:id/tables/:table/schema', async (req, res) => {
+  app.get('/api/projects/:projectId/connections/:id/tables/:table/schema', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       res.json(await driver.describeTable(req.params.table))
     } catch (err) { apiErr(res, err) }
   })
 
-  app.get('/api/connections/:id/tables/:table/data', async (req, res) => {
+  app.get('/api/projects/:projectId/connections/:id/tables/:table/data', async (req, res) => {
     try {
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       const limit = Math.min(parseInt(req.query.limit) || 100, 1000)
       const offset = parseInt(req.query.offset) || 0
@@ -99,31 +152,31 @@ export function startGuiServer(connections, port, projectRoot) {
     } catch (err) { apiErr(res, err) }
   })
 
-  app.patch('/api/connections/:id/tables/:table/rows', async (req, res) => {
+  app.patch('/api/projects/:projectId/connections/:id/tables/:table/rows', async (req, res) => {
     try {
       const { pk, pkValue, column, value } = req.body
       if (!pk || pkValue === undefined || !column) return apiErr(res, new Error('pk, pkValue, column required'), 400)
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       res.json(await driver.updateRow(req.params.table, pk, pkValue, column, value))
     } catch (err) { apiErr(res, err) }
   })
 
-  app.delete('/api/connections/:id/tables/:table/rows', async (req, res) => {
+  app.delete('/api/projects/:projectId/connections/:id/tables/:table/rows', async (req, res) => {
     try {
       const { pk, pkValue } = req.body
       if (!pk || pkValue === undefined) return apiErr(res, new Error('pk and pkValue required'), 400)
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       res.json(await driver.deleteRow(req.params.table, pk, pkValue))
     } catch (err) { apiErr(res, err) }
   })
 
-  app.post('/api/connections/:id/query', async (req, res) => {
+  app.post('/api/projects/:projectId/connections/:id/query', async (req, res) => {
     try {
       const { sql } = req.body
       if (!sql) return res.json({ rows: [], columns: [], error: 'No SQL provided' })
-      const conn = findConn(connections, req.params.id, projectRoot)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
       const driver = await getDriver(conn)
       try {
         res.json(await driver.runQuery(sql))
@@ -133,10 +186,10 @@ export function startGuiServer(connections, port, projectRoot) {
     } catch (err) { apiErr(res, err) }
   })
 
-  app.post('/api/connections/:id/reconnect', async (req, res) => {
+  app.post('/api/projects/:projectId/connections/:id/reconnect', async (req, res) => {
     try {
-      findConn(connections, req.params.id, projectRoot)
-      await reconnectDriver(req.params.id)
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
+      await reconnectDriver(conn)
       res.json({ ok: true })
     } catch (err) { apiErr(res, err) }
   })
@@ -150,7 +203,7 @@ export function startGuiServer(connections, port, projectRoot) {
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '127.0.0.1', () => {
       process.stderr.write(`[sqlmate] GUI available at http://localhost:${port}\n`)
-      resolve()
+      resolve(server)
     })
     server.on('error', reject)
   })

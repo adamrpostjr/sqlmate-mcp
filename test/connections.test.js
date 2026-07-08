@@ -409,7 +409,7 @@ describe('mergeProjectConnections', () => {
         { name: 'Keep', type: 'mysql', host: 'h', database: 'keep', username: 'u', password: 'p' },
       ]))
       const invalidated = []
-      const { removed } = mergeProjectConnections(list, dir, (id) => invalidated.push(id))
+      const { removed } = mergeProjectConnections(list, dir, (conn) => invalidated.push(conn.id))
       assert.deepEqual(removed, [dropId])
       assert.deepEqual(invalidated, [dropId], 'onRemoved should fire for the dropped connection')
       assert.equal(list.length, 1)
@@ -429,7 +429,7 @@ describe('mergeProjectConnections', () => {
 
       writeFile(dir, '.env', 'DB_CONNECTION=mysql\nDB_HOST=localhost\nDB_DATABASE=db\nDB_USERNAME=root\nDB_PASSWORD=new\n')
       const invalidated = []
-      const { added, removed } = mergeProjectConnections(list, dir, (id) => invalidated.push(id))
+      const { added, removed } = mergeProjectConnections(list, dir, (conn) => invalidated.push(conn.id))
       assert.equal(added.length, 0)
       assert.equal(removed.length, 0)
       assert.equal(list.length, 1)

@@ -18,29 +18,52 @@ function serializeConn(c) {
   return { id: c.id, name: c.name, type: c.type, source: c.source }
 }
 
-function emitStart(tool, connectionId, args) {
-  const id = randomUUID()
-  const timestamp = new Date().toISOString()
-  emitter.emit('tool_start', { id, tool, connectionId, args, timestamp })
-  return { id, startMs: Date.now() }
+const SENSITIVE_KEYWORD = /\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|auth)\b/i
+const STRING_LITERAL = /'(?:[^']|'')*'|"(?:[^"]|"")*"/g
+
+// Best-effort scrub of secret-shaped values before SQL text or error messages
+// leave this process via the tool_start/tool_end feed (broadcast to every
+// browser tab and, once attached, to other machines over the host protocol).
+// Not applied to what's returned to the calling agent — it needs the real text.
+// A `password = 'x'` literal sits right next to its keyword, but column-list
+// syntax (`INSERT INTO t (password) VALUES ('x')`) doesn't — and there's no
+// safe way to correlate a value back to its column without a real SQL parser.
+// So if the statement touches a sensitive keyword ANYWHERE, every string
+// literal in it is wiped rather than risk leaking the wrong one.
+function redactSecrets(text) {
+  if (!text) return text
+  let out = text
+  if (SENSITIVE_KEYWORD.test(out)) {
+    out = out.replace(STRING_LITERAL, (m) => m[0] + '[REDACTED]' + m[0])
+  }
+  return out.replace(/([a-z][a-z0-9+.-]*:\/\/[^:/\s]+:)[^@/\s]+(@)/gi, '$1[REDACTED]$2')
 }
 
-function emitEnd(id, startMs, result) {
+function emitStart(tool, connectionId, args, projectRoot) {
+  const id = randomUUID()
+  const timestamp = new Date().toISOString()
+  emitter.emit('tool_start', { id, tool, connectionId, args, timestamp, projectRoot })
+  return { id, startMs: Date.now(), projectRoot }
+}
+
+function emitEnd({ id, startMs, projectRoot }, result) {
   emitter.emit('tool_end', {
     id,
     duration: Date.now() - startMs,
     rowCount: Array.isArray(result?.rows) ? result.rows.length
       : Array.isArray(result) ? result.length
       : undefined,
-    error: null
+    error: null,
+    projectRoot
   })
 }
 
-function emitError(id, startMs, err) {
+function emitError({ id, startMs, projectRoot }, err) {
   emitter.emit('tool_end', {
     id,
     duration: Date.now() - startMs,
-    error: err.message
+    error: redactSecrets(err.message),
+    projectRoot
   })
 }
 
@@ -103,8 +126,8 @@ function assessRisk(sql) {
   return { risky: false }
 }
 
-export async function startMcpServer(connections, projectRoot) {
-  const server = new McpServer({ name: 'sqlmate-mcp', version: '1.0.0' })
+export async function startMcpServer(connections, projectRoot, { transport } = {}) {
+  const server = new McpServer({ name: 'sqlmate-mcp', version: '1.2.0' })
 
   // Connections visible to a project: its own file-derived connections plus any
   // global (tool-added) ones. A tool call's project_root wins; otherwise the
@@ -126,7 +149,7 @@ export async function startMcpServer(connections, projectRoot) {
       )
     },
     async ({ project_root } = {}) => {
-      const { id, startMs } = emitStart('list_connections', null, { project_root })
+      const ctx = emitStart('list_connections', null, { project_root }, project_root ?? projectRoot)
       try {
         if (project_root) {
           const { added, removed } = mergeProjectConnections(connections, project_root, invalidateDriver)
@@ -136,7 +159,7 @@ export async function startMcpServer(connections, projectRoot) {
         }
         const visible = scopeFor(project_root)
         if (visible.length === 0) {
-          emitEnd(id, startMs, [])
+          emitEnd(ctx, [])
           return ok({
             connections: [],
             setup_required: true,
@@ -151,9 +174,9 @@ export async function startMcpServer(connections, projectRoot) {
           })
         }
         const result = visible.map(serializeConn)
-        emitEnd(id, startMs, result)
+        emitEnd(ctx, result)
         return ok(result)
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
@@ -180,17 +203,20 @@ export async function startMcpServer(connections, projectRoot) {
     },
     async (input) => {
       const { password: _pw, username: _un, ...safeArgs } = input
-      const { id, startMs } = emitStart('add_connection', null, safeArgs)
+      // A url like mysql://user:pass@host embeds credentials outside the
+      // password/username fields already stripped above — redact those too.
+      if (safeArgs.url) safeArgs.url = redactSecrets(safeArgs.url)
+      const ctx = emitStart('add_connection', null, safeArgs, projectRoot)
       try {
         const added = parseConnectionInput(input, connections)
         for (const conn of added) connections.push(conn)
         emitter.emit('connections_changed', connections.map(serializeConn))
-        emitEnd(id, startMs, added)
+        emitEnd(ctx, added)
         return ok({
           added: added.map(serializeConn),
           message: `${added.length} connection(s) added. Use list_connections to see all configured connections.`
         })
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
@@ -202,14 +228,14 @@ export async function startMcpServer(connections, projectRoot) {
       project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
     async ({ connectionId, project_root }) => {
-      const { id, startMs } = emitStart('list_tables', connectionId, { connectionId })
+      const ctx = emitStart('list_tables', connectionId, { connectionId }, project_root ?? projectRoot)
       try {
         const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.listTables()
-        emitEnd(id, startMs, result)
+        emitEnd(ctx, result)
         return ok(result)
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
@@ -222,14 +248,14 @@ export async function startMcpServer(connections, projectRoot) {
       project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
     async ({ connectionId, table, project_root }) => {
-      const { id, startMs } = emitStart('describe_table', connectionId, { table })
+      const ctx = emitStart('describe_table', connectionId, { table }, project_root ?? projectRoot)
       try {
         const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.describeTable(table)
-        emitEnd(id, startMs, result)
+        emitEnd(ctx, result)
         return ok(result)
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
@@ -242,14 +268,14 @@ export async function startMcpServer(connections, projectRoot) {
       project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
     async ({ connectionId, sql, project_root }) => {
-      const { id, startMs } = emitStart('run_query', connectionId, { sql: sql.slice(0, 300) })
+      const ctx = emitStart('run_query', connectionId, { sql: redactSecrets(sql).slice(0, 300) }, project_root ?? projectRoot)
       try {
         const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.runQuery(sql)
-        emitEnd(id, startMs, result)
+        emitEnd(ctx, result)
         return ok(result)
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
@@ -271,12 +297,12 @@ export async function startMcpServer(connections, projectRoot) {
       project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
     },
     async ({ connectionId, sql, confirm, project_root }) => {
-      const { id, startMs } = emitStart('run_write', connectionId, { sql: sql.slice(0, 300) })
+      const ctx = emitStart('run_write', connectionId, { sql: redactSecrets(sql).slice(0, 300) }, project_root ?? projectRoot)
       try {
         const { risky, reason } = assessRisk(sql)
 
         if (risky && !confirm) {
-          emitter.emit('tool_end', { id, duration: Date.now() - startMs, error: null, requiresConfirmation: true })
+          emitter.emit('tool_end', { id: ctx.id, duration: Date.now() - ctx.startMs, error: null, requiresConfirmation: true, projectRoot: ctx.projectRoot })
           return ok({
             requiresConfirmation: true,
             risk: reason,
@@ -293,17 +319,16 @@ export async function startMcpServer(connections, projectRoot) {
         const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.runWrite(sql)
-        emitEnd(id, startMs, result)
+        emitEnd(ctx, result)
         return ok({
           result,
           affectedRows: result.affectedRows,
           message: `Write operation completed. ${result.affectedRows ?? '?'} row(s) affected.`
         })
-      } catch (err) { emitError(id, startMs, err); return fail(err) }
+      } catch (err) { emitError(ctx, err); return fail(err) }
     }
   )
 
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
+  await server.connect(transport ?? new StdioServerTransport())
   process.stderr.write('[sqlmate] MCP server connected via stdio\n')
 }

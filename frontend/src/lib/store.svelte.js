@@ -1,6 +1,7 @@
 class AppStore {
   // Connection data
   connections = $state([])
+  projectId = $state(null)
   projectRoot = $state(null)
 
   // Sidebar
@@ -93,11 +94,13 @@ class AppStore {
   }
 
   applyAgentEvent(type, data) {
-    if (type === 'connections_changed') {
-      const newIds = new Set(data.map(c => c.id))
+    if (type === 'projects_changed') {
+      const mine = data.find(p => p.projectId === this.projectId)
+      const newConns = mine?.connections ?? []
+      const newIds = new Set(newConns.map(c => c.id))
       const goneIds = this.connections.map(c => c.id).filter(id => !newIds.has(id))
       for (const connId of goneIds) this.pruneConnection(connId)
-      this.connections = data
+      this.connections = newConns
       return
     }
     if (type === 'tool_start') {

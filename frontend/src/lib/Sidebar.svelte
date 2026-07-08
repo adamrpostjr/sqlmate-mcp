@@ -2,7 +2,7 @@
   import { ChevronRightIcon, ChevronDownIcon, RefreshCwIcon, TableIcon, TerminalIcon } from '@lucide/svelte'
   import { store } from './store.svelte.js'
   import { loadTables, openTable, openSqlTab } from './api.js'
-  import { api } from './api.js'
+  import { api, connectionPath } from './api.js'
 
   const typeColors = {
     mysql: 'text-amber-400',
@@ -32,7 +32,7 @@
     e.stopPropagation()
     store.loading[`reconnect:${connId}`] = true
     try {
-      await api('POST', `/api/connections/${connId}/reconnect`)
+      await api('POST', connectionPath(connId, '/reconnect'))
       delete store.connTables[connId]
       store.expandedConns[connId] = false
       store.addToast(`Reconnected: ${connId}`, 'success')

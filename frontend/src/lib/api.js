@@ -12,20 +12,26 @@ export async function api(method, path, body) {
   return data
 }
 
+export function connectionPath(connId, suffix = '') {
+  return `/api/projects/${store.projectId}/connections/${connId}${suffix}`
+}
+
 export async function loadInfo() {
   const info = await api('GET', '/api/info')
-  store.projectRoot = info.projectRoot
+  store.projectId = info.selfProjectId
+  const self = info.projects?.find(p => p.projectId === info.selfProjectId)
+  store.projectRoot = self?.projectRoot ?? null
 }
 
 export async function loadConnections() {
-  const conns = await api('GET', '/api/connections')
+  const conns = await api('GET', `/api/projects/${store.projectId}/connections`)
   store.connections = conns
   return conns
 }
 
 export async function loadTables(connId) {
   if (store.connTables[connId]) return store.connTables[connId]
-  const tables = await api('GET', `/api/connections/${connId}/tables`)
+  const tables = await api('GET', connectionPath(connId, '/tables'))
   store.connTables[connId] = tables
   return tables
 }
@@ -33,7 +39,7 @@ export async function loadTables(connId) {
 export async function loadSchema(connId, table) {
   const key = `${connId}:${table}`
   if (store.schemaCache[key]) return store.schemaCache[key]
-  const schema = await api('GET', `/api/connections/${connId}/tables/${encodeURIComponent(table)}/schema`)
+  const schema = await api('GET', connectionPath(connId, `/tables/${encodeURIComponent(table)}/schema`))
   store.schemaCache[key] = schema
   return schema
 }
@@ -46,7 +52,7 @@ export async function loadTableData(tabId) {
   store.loading[tabId] = true
   try {
     const data = await api('GET',
-      `/api/connections/${tab.connId}/tables/${encodeURIComponent(tab.table)}/data?limit=100&offset=${offset}`
+      connectionPath(tab.connId, `/tables/${encodeURIComponent(tab.table)}/data?limit=100&offset=${offset}`)
     )
     store.tableData[tabId] = data
   } catch (err) {

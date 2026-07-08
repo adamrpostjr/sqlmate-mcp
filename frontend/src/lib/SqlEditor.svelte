@@ -1,7 +1,7 @@
 <script>
   import { PlayIcon, Loader2Icon, TerminalIcon, Trash2Icon } from '@lucide/svelte'
   import { store } from './store.svelte.js'
-  import { api } from './api.js'
+  import { api, connectionPath } from './api.js'
 
   let { connId, tabId } = $props()
 
@@ -18,7 +18,7 @@
     if (!sql.trim()) return
     store.loading[`sql:${tabId}`] = true
     try {
-      const res = await api('POST', `/api/connections/${connId}/query`, { sql })
+      const res = await api('POST', connectionPath(connId, '/query'), { sql })
       store.sqlResults[tabId] = res
     } catch (err) {
       store.sqlResults[tabId] = { rows: [], columns: [], error: err.message }

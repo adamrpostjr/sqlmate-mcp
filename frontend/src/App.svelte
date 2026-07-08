@@ -16,16 +16,16 @@
 
   onMount(async () => {
     try {
+      await loadInfo()
       await loadConnections()
     } catch (err) {
       store.addToast('Failed to connect to sqlmate server: ' + err.message)
     }
-    try { await loadInfo() } catch {}
 
-    es = new EventSource('/api/events')
+    es = new EventSource(`/api/events?projectId=${encodeURIComponent(store.projectId ?? '')}`)
     es.addEventListener('tool_start', (e) => store.applyAgentEvent('tool_start', JSON.parse(e.data)))
     es.addEventListener('tool_end', (e) => store.applyAgentEvent('tool_end', JSON.parse(e.data)))
-    es.addEventListener('connections_changed', (e) => store.applyAgentEvent('connections_changed', JSON.parse(e.data)))
+    es.addEventListener('projects_changed', (e) => store.applyAgentEvent('projects_changed', JSON.parse(e.data)))
     es.onopen = () => { wasDown = false }
     es.onerror = () => {
       // EventSource auto-reconnects; surface a single toast per outage.

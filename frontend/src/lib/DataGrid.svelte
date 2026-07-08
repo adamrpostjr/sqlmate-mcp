@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { ChevronLeftIcon, ChevronRightIcon, Trash2Icon, Loader2Icon, TableIcon, CodeIcon } from '@lucide/svelte'
   import { store } from './store.svelte.js'
-  import { api, loadTableData, openSqlTab } from './api.js'
+  import { api, connectionPath, loadTableData, openSqlTab } from './api.js'
 
   let { connId, table } = $props()
 
@@ -47,7 +47,7 @@
     editingCell = null
     if (value === String(original ?? '')) return
     try {
-      await api('PATCH', `/api/connections/${connId}/tables/${encodeURIComponent(table)}/rows`, {
+      await api('PATCH', connectionPath(connId, `/tables/${encodeURIComponent(table)}/rows`), {
         pk, pkValue, column, value
       })
       await loadTableData(tabId)
@@ -67,7 +67,7 @@
   async function deleteRow(pkValue) {
     if (!confirm(`Delete row where ${pk} = ${pkValue}?`)) return
     try {
-      await api('DELETE', `/api/connections/${connId}/tables/${encodeURIComponent(table)}/rows`, { pk, pkValue })
+      await api('DELETE', connectionPath(connId, `/tables/${encodeURIComponent(table)}/rows`), { pk, pkValue })
       await loadTableData(tabId)
     } catch (err) {
       store.addToast(`Delete failed: ${err.message}`)

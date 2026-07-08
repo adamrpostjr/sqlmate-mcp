@@ -151,11 +151,11 @@ export function parseConnectionInput(input, existing = []) {
 
 // DB-defining fields — if any of these change for a connection, its cached
 // driver must be invalidated because it points at a different physical target.
-const CONFIG_FIELDS = ['type', 'host', 'port', 'username', 'password', 'database', 'path', 'source']
+export const CONFIG_FIELDS = ['type', 'host', 'port', 'username', 'password', 'database', 'path', 'source']
 
 // Identity of a connection within a single project: the file it came from plus
 // the physical database it targets. Stable across reloads of the same project.
-function connIdentity(conn) {
+export function connIdentity(conn) {
   return `${conn.source}|${conn.database ?? ''}|${conn.path ?? ''}`
 }
 
@@ -179,7 +179,8 @@ export function resolveConnection(connections, id, projectRoot) {
 // idempotently. Existing connections keep their id (so the id-keyed driver
 // cache stays valid); only brand-new connections get a fresh id. Connections
 // dropped from config, or whose DB-defining config changed, are reported via
-// onRemoved so the caller can invalidate their cached drivers.
+// onRemoved (receives the removed/stale connection object) so the caller can
+// invalidate their cached drivers.
 // Returns { added, removed } (removed is a list of connection ids).
 export function mergeProjectConnections(connections, projectRoot, onRemoved = () => {}) {
   const fresh = loadConnections(projectRoot)  // sources already absolutized + tagged
@@ -193,7 +194,7 @@ export function mergeProjectConnections(connections, projectRoot, onRemoved = ()
     if (!freshIdentities.has(connIdentity(existing))) {
       connections.splice(connections.indexOf(existing), 1)
       removed.push(existing.id)
-      onRemoved(existing.id)
+      onRemoved(existing)
     }
   }
 
@@ -208,7 +209,7 @@ export function mergeProjectConnections(connections, projectRoot, onRemoved = ()
       if (!sameConfig(existing, conn)) {
         for (const f of CONFIG_FIELDS) existing[f] = conn[f]
         existing.name = conn.name
-        onRemoved(existing.id)
+        onRemoved(existing)
       }
     } else {
       // Brand-new connection: assign a collision-safe id against the whole

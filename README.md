@@ -16,6 +16,7 @@ Connect Claude to your MySQL, MariaDB, SQLite, or MSSQL databases. sqlmate-mcp r
 - **Write safety** — risky operations (DELETE/UPDATE without WHERE, DROP, TRUNCATE) require explicit confirmation
 - **Browser GUI** — paginated data grid, inline cell editing, row delete, schema view, SQL editor
 - **Live agent feed** — watch every MCP tool call stream in real time in the browser
+- **Shared multi-project GUI** — open multiple projects in Claude Code at once; the first sqlmate-mcp process hosts the GUI and later ones attach to it automatically, each scoped to its own connections and feed
 - **No native builds** — SQLite uses Node.js's built-in `node:sqlite` (no `node-gyp`)
 
 ---
@@ -188,6 +189,19 @@ Opens automatically at `http://localhost:4737` on startup.
 - Run arbitrary SQL in the built-in SQL editor
 - Reconnect a database without restarting the server
 - Watch a live feed of every MCP tool call Claude makes
+
+---
+
+## Multiple Projects
+
+If you have Claude Code (or Zed) open in more than one project at a time, each one runs its own sqlmate-mcp server process — but only one browser GUI is needed.
+
+- The first process to start binds the GUI port (`SQLMATE_PORT`, default `4737`) and becomes the **host**.
+- Every other process detects the port is taken, confirms it's a compatible sqlmate-mcp host, and **attaches** to it instead of failing or opening a second GUI.
+- Each attached project's tables, SQL editor, and live agent feed are scoped to its own tab — one project can't see another's connections, queries, or errors.
+- If the host process exits, one of the remaining attached processes automatically takes over as the new host, so the GUI keeps working.
+
+This is automatic and requires no configuration. It only matters if you're running multiple sqlmate-mcp versions side by side — an attaching process checks the host's protocol version and simply skips the GUI (falling back to MCP-tools-only) if they don't match, rather than erroring.
 
 ---
 

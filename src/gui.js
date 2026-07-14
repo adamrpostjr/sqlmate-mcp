@@ -34,20 +34,26 @@ export function startGuiServer(registry, port) {
     res.setHeader('X-Accel-Buffering', 'no')
     res.flushHeaders()
 
-    // Scope everything to the requesting browser's own project: in the shared
-    // multi-project GUI, another attached project's SQL text, error messages,
-    // and even its existence/path must never reach a tab that isn't theirs.
-    // A missing or empty projectId fails closed (matches nothing) — nothing
-    // needs an "unfiltered" fallback since the frontend always sends its own
-    // project's id, and this is the one place that decides what a tab can see.
+    // By default, scope everything to the requesting browser's own project:
+    // another attached project's SQL text, error messages, and even its
+    // existence/path must never reach a tab that isn't theirs. A missing or
+    // empty projectId fails closed (matches nothing).
+    //
+    // The unified dashboard opts out with ?all=1: it is a single local view of
+    // every project registered on this machine for the same OS user, so it
+    // receives all projects and all tool activity (each event carries its own
+    // projectId/projectRoot for labeling). This opt-in is the ONLY way to get
+    // cross-project visibility — the default stays fail-closed for any other
+    // consumer.
     const projectId = req.query.projectId
-    const isMine = (data) => data.projectId === projectId
+    const all = req.query.all === '1'
+    const isMine = (data) => all || data.projectId === projectId
 
     const onStart = (data) => { if (isMine(data)) res.write(`event: tool_start\ndata: ${JSON.stringify(data)}\n\n`) }
     const onEnd = (data) => { if (isMine(data)) res.write(`event: tool_end\ndata: ${JSON.stringify(data)}\n\n`) }
     const onChanged = (snapshot) => {
-      const mine = snapshot.filter(isMine)
-      res.write(`event: projects_changed\ndata: ${JSON.stringify(mine)}\n\n`)
+      const visible = all ? snapshot : snapshot.filter(isMine)
+      res.write(`event: projects_changed\ndata: ${JSON.stringify(visible)}\n\n`)
     }
 
     emitter.on('feed_tool_start', onStart)
@@ -141,6 +147,14 @@ export function startGuiServer(registry, port) {
     } catch (err) { apiErr(res, err) }
   })
 
+  app.get('/api/projects/:projectId/connections/:id/schema-graph', async (req, res) => {
+    try {
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
+      const driver = await getDriver(conn)
+      res.json(await driver.getSchemaGraph())
+    } catch (err) { apiErr(res, err) }
+  })
+
   app.get('/api/projects/:projectId/connections/:id/tables/:table/data', async (req, res) => {
     try {
       const conn = registry.findConnection(req.params.projectId, req.params.id)
@@ -182,6 +196,20 @@ export function startGuiServer(registry, port) {
         res.json(await driver.runQuery(sql))
       } catch (queryErr) {
         res.json({ rows: [], columns: [], error: queryErr.message })
+      }
+    } catch (err) { apiErr(res, err) }
+  })
+
+  app.post('/api/projects/:projectId/connections/:id/explain', async (req, res) => {
+    try {
+      const { sql, analyze } = req.body
+      if (!sql) return res.json({ error: 'No SQL provided' })
+      const conn = registry.findConnection(req.params.projectId, req.params.id)
+      const driver = await getDriver(conn)
+      try {
+        res.json(await driver.explainQuery(sql, { analyze }))
+      } catch (explainErr) {
+        res.json({ error: explainErr.message })
       }
     } catch (err) { apiErr(res, err) }
   })

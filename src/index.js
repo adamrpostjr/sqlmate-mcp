@@ -75,6 +75,14 @@ function wireLocalEventsOnce() {
   emitter.on('tool_end', d => registry.handleToolEvent('tool_end', d))
 }
 
+async function openBrowser() {
+  if (process.env.SQLMATE_NO_OPEN === '1' || connections.length === 0) return
+  try {
+    const { default: open } = await import('open')
+    await open(`http://localhost:${port}`)
+  } catch {}
+}
+
 async function becomeHostOrAttach() {
   try {
     await startGuiServer(registry, port)
@@ -82,6 +90,9 @@ async function becomeHostOrAttach() {
     attach = null
     guiEstablished = true
     process.stderr.write('[sqlmate] Running as GUI host.\n')
+    // Only the process that actually stands up the GUI opens a browser tab —
+    // an attaching process shares an already-open GUI, so it must not.
+    await openBrowser()
     return
   } catch (err) {
     if (err?.code !== 'EADDRINUSE') {
@@ -132,10 +143,3 @@ async function shutdown() {
 }
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
-
-if (process.env.SQLMATE_NO_OPEN !== '1' && connections.length > 0 && guiEstablished) {
-  try {
-    const { default: open } = await import('open')
-    await open(`http://localhost:${port}`)
-  } catch {}
-}

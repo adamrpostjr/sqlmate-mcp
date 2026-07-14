@@ -15,8 +15,10 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@lucide/svelte": "^0.511.0",
     "@skeletonlabs/skeleton": "^3.0.0",
-    "@skeletonlabs/skeleton-svelte": "^1.0.0"
+    "@skeletonlabs/skeleton-svelte": "^1.0.0",
+    "@xyflow/svelte": "^1.6.2"
   }
 }

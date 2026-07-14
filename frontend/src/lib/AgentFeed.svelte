@@ -38,9 +38,9 @@
     return ''
   }
 
-  function connName(connId) {
-    if (!connId) return ''
-    return store.connections.find(c => c.id === connId)?.name || connId
+  function connName(ev) {
+    if (!ev.connectionId) return ''
+    return store.getConnection(ev.projectId, ev.connectionId)?.name || ev.connectionId
   }
 
   // Auto-scroll to top (newest events are unshifted)
@@ -115,7 +115,10 @@
           <!-- Connection -->
           {#if ev.connectionId}
             <div class="text-surface-500 text-[11px] mb-1 font-mono truncate">
-              {connName(ev.connectionId)}
+              {#if store.projects.length > 1}
+                <span class="opacity-60">{store.projectName(ev.projectId)}/</span>
+              {/if}
+              {connName(ev)}
             </div>
           {/if}
 

@@ -4,7 +4,7 @@
   import { store } from './store.svelte.js'
   import { api, connectionPath, loadTableData, openSqlTab } from './api.js'
 
-  let { connId, table } = $props()
+  let { projectId, connId, table } = $props()
 
   const LIMIT = 100
 
@@ -12,10 +12,10 @@
   let editingCell = $state(null)   // { rowIndex, column, pk, pkValue, value }
 
   // Derived
-  const tabId = $derived(store.tabId(connId, table))
+  const tabId = $derived(store.tabId(projectId, connId, table))
   const data = $derived(store.tableData[tabId])
-  const schema = $derived(store.getSchema(connId, table))
-  const pk = $derived(store.getPkColumn(connId, table))
+  const schema = $derived(store.getSchema(projectId, connId, table))
+  const pk = $derived(store.getPkColumn(projectId, connId, table))
   const page = $derived(store.currentPage[tabId] || 0)
   const loading = $derived(!!store.loading[tabId])
   const totalPages = $derived(data ? Math.max(1, Math.ceil(data.total / LIMIT)) : 1)
@@ -47,7 +47,7 @@
     editingCell = null
     if (value === String(original ?? '')) return
     try {
-      await api('PATCH', connectionPath(connId, `/tables/${encodeURIComponent(table)}/rows`), {
+      await api('PATCH', connectionPath(projectId, connId, `/tables/${encodeURIComponent(table)}/rows`), {
         pk, pkValue, column, value
       })
       await loadTableData(tabId)
@@ -67,7 +67,7 @@
   async function deleteRow(pkValue) {
     if (!confirm(`Delete row where ${pk} = ${pkValue}?`)) return
     try {
-      await api('DELETE', connectionPath(connId, `/tables/${encodeURIComponent(table)}/rows`), { pk, pkValue })
+      await api('DELETE', connectionPath(projectId, connId, `/tables/${encodeURIComponent(table)}/rows`), { pk, pkValue })
       await loadTableData(tabId)
     } catch (err) {
       store.addToast(`Delete failed: ${err.message}`)
@@ -126,7 +126,7 @@
     </button>
     <button
       class="btn btn-sm preset-tonal gap-1 text-xs"
-      onclick={() => openSqlTab(connId)}
+      onclick={() => openSqlTab(projectId, connId)}
     >
       <CodeIcon class="size-3" /> SQL
     </button>

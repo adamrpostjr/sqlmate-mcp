@@ -3,10 +3,10 @@
   import { store } from './store.svelte.js'
   import { openSqlTab } from './api.js'
 
-  let { connId, table } = $props()
+  let { projectId, connId, table } = $props()
 
-  const schema = $derived(store.getSchema(connId, table))
-  const currentTab = $derived(store.openTabs.find(t => t.id === store.tabId(connId, table)))
+  const schema = $derived(store.getSchema(projectId, connId, table))
+  const currentTab = $derived(store.openTabs.find(t => t.id === store.tabId(projectId, connId, table)))
 
   function setView(view) {
     if (currentTab) currentTab.view = view
@@ -21,7 +21,7 @@
     <div class="flex-1"></div>
     <button class="btn btn-sm preset-tonal text-xs" onclick={() => setView('data')}>Data</button>
     <button class="btn btn-sm preset-filled-primary-500 text-xs">Schema</button>
-    <button class="btn btn-sm preset-tonal text-xs" onclick={() => openSqlTab(connId)}>SQL</button>
+    <button class="btn btn-sm preset-tonal text-xs" onclick={() => openSqlTab(projectId, connId)}>SQL</button>
   </div>
 
   <div class="flex-1 overflow-auto p-4">

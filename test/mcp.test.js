@@ -47,6 +47,19 @@ function makeSqliteFixture(name, seedRows = []) {
   return file
 }
 
+function makeSqliteFixtureWithSchemaGraph(name) {
+  const file = path.join(os.tmpdir(), `sqlmate-mcp-test-${name}-${process.pid}.sqlite`)
+  fixtureFiles.push(file)
+  if (fs.existsSync(file)) fs.rmSync(file)
+  const db = new DatabaseSync(file)
+  db.exec('PRAGMA foreign_keys = ON')
+  db.exec('CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT)')
+  db.exec('CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author_id INTEGER REFERENCES authors(id))')
+  db.exec('CREATE INDEX idx_books_title ON books(title)')
+  db.close()
+  return file
+}
+
 function makeSqliteFixtureWithPasswordColumn(name) {
   const file = path.join(os.tmpdir(), `sqlmate-mcp-test-${name}-${process.pid}.sqlite`)
   fixtureFiles.push(file)
@@ -125,6 +138,111 @@ describe('run_query / run_write telemetry', () => {
       } finally {
         stop()
       }
+    })
+  })
+})
+
+describe('get_schema', () => {
+  test('returns the full schema graph with foreign keys and indexes', async () => {
+    const path_ = makeSqliteFixtureWithSchemaGraph('schema-graph')
+    const connections = [{
+      id: 'mem-schema', name: 'Mem Schema', type: 'sqlite', path: path_, source: 'test', projectRoot: '/proj/schema'
+    }]
+    await withMcpClient(connections, '/proj/schema', async (client) => {
+      const result = await client.callTool({
+        name: 'get_schema',
+        arguments: { connectionId: 'mem-schema', project_root: '/proj/schema' }
+      })
+      const payload = JSON.parse(result.content[0].text)
+      const tableNames = payload.tables.map(t => t.name).sort()
+      assert.deepEqual(tableNames, ['authors', 'books'])
+
+      const books = payload.tables.find(t => t.name === 'books')
+      assert.ok(books, 'expected a books table entry')
+      assert.equal(books.foreignKeys.length, 1)
+      assert.equal(books.foreignKeys[0].column, 'author_id')
+      assert.equal(books.foreignKeys[0].refTable, 'authors')
+      assert.equal(books.foreignKeys[0].refColumn, 'id')
+
+      const titleIndex = books.indexes.find(idx => idx.columns.includes('title'))
+      assert.ok(titleIndex, 'expected an index covering the title column')
+      assert.equal(titleIndex.name, 'idx_books_title')
+
+      const authors = payload.tables.find(t => t.name === 'authors')
+      assert.ok(authors, 'expected an authors table entry')
+      assert.equal(authors.foreignKeys.length, 0)
+    })
+  })
+
+  test('returns a single-table subset when table is provided', async () => {
+    const path_ = makeSqliteFixtureWithSchemaGraph('schema-single')
+    const connections = [{
+      id: 'mem-schema-single', name: 'Mem Schema Single', type: 'sqlite', path: path_, source: 'test', projectRoot: '/proj/schema-single'
+    }]
+    await withMcpClient(connections, '/proj/schema-single', async (client) => {
+      const result = await client.callTool({
+        name: 'get_schema',
+        arguments: { connectionId: 'mem-schema-single', table: 'books', project_root: '/proj/schema-single' }
+      })
+      const payload = JSON.parse(result.content[0].text)
+      assert.equal(payload.name, 'books')
+      assert.ok(Array.isArray(payload.columns))
+      assert.equal(payload.foreignKeys.length, 1)
+      assert.equal(payload.foreignKeys[0].refTable, 'authors')
+      assert.ok(payload.indexes.some(idx => idx.columns.includes('title')))
+    })
+  })
+})
+
+describe('explain_query', () => {
+  test('returns a query_plan for a SELECT without executing it', async () => {
+    const path_ = makeSqliteFixture('explain', ['hello', 'world'])
+    const connections = [{
+      id: 'mem-explain', name: 'Mem Explain', type: 'sqlite', path: path_, source: 'test', projectRoot: '/proj/explain'
+    }]
+    await withMcpClient(connections, '/proj/explain', async (client) => {
+      const result = await client.callTool({
+        name: 'explain_query',
+        arguments: { connectionId: 'mem-explain', sql: 'SELECT * FROM t WHERE val = ?', project_root: '/proj/explain' }
+      })
+      const payload = JSON.parse(result.content[0].text)
+      assert.ok(payload.plan, 'expected a plan in the response')
+      assert.equal(payload.format, 'query_plan')
+      assert.ok(Array.isArray(payload.plan))
+    })
+  })
+
+  test('rejects analyze:true against a write statement', async () => {
+    const path_ = makeSqliteFixture('explain-write-reject')
+    const connections = [{
+      id: 'mem-explain-write', name: 'Mem Explain Write', type: 'sqlite', path: path_, source: 'test', projectRoot: '/proj/explain-write'
+    }]
+    await withMcpClient(connections, '/proj/explain-write', async (client) => {
+      const result = await client.callTool({
+        name: 'explain_query',
+        arguments: { connectionId: 'mem-explain-write', sql: 'DELETE FROM t', analyze: true, project_root: '/proj/explain-write' }
+      })
+      const payload = JSON.parse(result.content[0].text)
+      assert.ok(payload.error, 'expected an error payload for analyze against a write statement')
+      assert.match(payload.error, /EXPLAIN ANALYZE is only allowed for read statements/)
+    })
+  })
+})
+
+describe('run_query includes durationMs', () => {
+  test('run_query result payload includes a numeric durationMs', async () => {
+    const path_ = makeSqliteFixture('duration', ['hello'])
+    const connections = [{
+      id: 'mem-duration', name: 'Mem Duration', type: 'sqlite', path: path_, source: 'test', projectRoot: '/proj/duration'
+    }]
+    await withMcpClient(connections, '/proj/duration', async (client) => {
+      const result = await client.callTool({
+        name: 'run_query',
+        arguments: { connectionId: 'mem-duration', sql: 'SELECT * FROM t', project_root: '/proj/duration' }
+      })
+      const payload = JSON.parse(result.content[0].text)
+      assert.equal(typeof payload.durationMs, 'number')
+      assert.ok(payload.durationMs >= 0)
     })
   })
 })

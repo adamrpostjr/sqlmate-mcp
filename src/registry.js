@@ -125,12 +125,21 @@ export class ProjectRegistry {
     emitter.emit(`feed_${type}`, { ...data, projectId, projectRoot })
   }
 
-  // Public view of the registry: no credentials, ever.
+  // Public view of the registry: no credentials, ever. host/port/database/path
+  // are not secrets and are included so the GUI can distinguish same-named
+  // connections that point at different hosts/databases.
   snapshot() {
     return [...this.projects.values()].map(p => ({
       projectId: p.projectId,
       projectRoot: p.projectRoot,
-      connections: p.connections.map(c => ({ id: c.id, name: c.name, type: c.type, source: c.source }))
+      connections: p.connections.map(c => {
+        const out = { id: c.id, name: c.name, type: c.type, source: c.source }
+        if (c.host != null) out.host = c.host
+        if (c.port != null) out.port = c.port
+        if (c.database != null) out.database = c.database
+        if (c.path != null) out.path = c.path
+        return out
+      })
     }))
   }
 

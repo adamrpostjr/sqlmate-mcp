@@ -291,8 +291,22 @@ describe('ProjectRegistry.snapshot', () => {
     const snap = registry.snapshot()
     assert.equal(snap.length, 1)
     const c = snap[0].connections[0]
-    assert.deepEqual(Object.keys(c).sort(), ['id', 'name', 'source', 'type'])
+    assert.deepEqual(Object.keys(c).sort(), ['id', 'name', 'path', 'source', 'type'])
     assert.equal(c.password, undefined)
     assert.equal(c.username, undefined)
+  })
+
+  test('includes non-secret host/port/database for networked connections', () => {
+    const registry = new ProjectRegistry()
+    registry.register({
+      projectRoot: '/proj/a',
+      connections: [conn({ type: 'mysql', path: undefined, host: 'db.internal', port: 3306, database: 'shop' })]
+    })
+    const c = registry.snapshot()[0].connections[0]
+    assert.equal(c.host, 'db.internal')
+    assert.equal(c.port, 3306)
+    assert.equal(c.database, 'shop')
+    assert.equal(c.username, undefined)
+    assert.equal(c.password, undefined)
   })
 })

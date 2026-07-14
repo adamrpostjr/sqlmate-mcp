@@ -73,8 +73,24 @@ describe('parseConnectionUrl', () => {
     assert.equal(conn.port, 1433)
   })
 
+  test('parses postgres URL', () => {
+    const conn = parseConnectionUrl('postgres://user:pass@localhost:5432/mydb')
+    assert.equal(conn.type, 'postgres')
+    assert.equal(conn.host, 'localhost')
+    assert.equal(conn.port, 5432)
+    assert.equal(conn.username, 'user')
+    assert.equal(conn.password, 'pass')
+    assert.equal(conn.database, 'mydb')
+  })
+
+  test('defaults missing port for postgres', () => {
+    const conn = parseConnectionUrl('postgres://user@localhost/mydb')
+    assert.equal(conn.type, 'postgres')
+    assert.equal(conn.port, 5432)
+  })
+
   test('returns null for unsupported scheme', () => {
-    assert.equal(parseConnectionUrl('postgres://localhost/db'), null)
+    assert.equal(parseConnectionUrl('mongodb://localhost/db'), null)
   })
 
   test('returns null for malformed URL', () => {
@@ -113,6 +129,14 @@ describe('inferTypeFromEnv', () => {
 
   test('infers mssql from DB_PORT=1433', () => {
     assert.equal(inferTypeFromEnv({ DB_PORT: '1433' }), 'mssql')
+  })
+
+  test('infers postgres from DB_CONNECTION=pgsql', () => {
+    assert.equal(inferTypeFromEnv({ DB_CONNECTION: 'pgsql' }), 'postgres')
+  })
+
+  test('infers postgres from DB_PORT=5432', () => {
+    assert.equal(inferTypeFromEnv({ DB_PORT: '5432' }), 'postgres')
   })
 
   test('returns null when nothing matches', () => {

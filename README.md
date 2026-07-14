@@ -2,7 +2,7 @@
 
 **Zero-config SQL database MCP server with a browser GUI for Claude Code.**
 
-Connect Claude to your MySQL, MariaDB, SQLite, or MSSQL databases. sqlmate-mcp reads your existing `.env` or a `.sqlmaterc` config, exposes your databases as MCP tools, and opens a live browser GUI so you can browse, edit, and run SQL alongside your AI assistant.
+Connect Claude to your MySQL, MariaDB, SQLite, MSSQL, or PostgreSQL databases. sqlmate-mcp reads your existing `.env` or a `.sqlmaterc` config, exposes your databases as MCP tools, and opens a live browser GUI so you can browse, edit, and run SQL alongside your AI assistant.
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](https://nodejs.org) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -11,12 +11,15 @@ Connect Claude to your MySQL, MariaDB, SQLite, or MSSQL databases. sqlmate-mcp r
 ## Features
 
 - **Zero config** — reads `DB_*` vars or `DATABASE_URL` straight from your project's `.env`
-- **Multi-connection** — manage MySQL, MariaDB, SQLite, and MSSQL from a single server
-- **5 MCP tools** — list connections, list tables, describe schema, run read queries, run writes
+- **Multi-connection** — manage MySQL, MariaDB, SQLite, MSSQL, and PostgreSQL from a single server
+- **8 MCP tools** — list/add connections, list tables, describe a table, dump the full schema graph, run read queries, EXPLAIN a query, run writes
+- **Schema intelligence** — `get_schema` returns every table with its columns, primary keys, foreign keys, and indexes in one call
+- **Query plans** — `explain_query` returns the execution plan (plan-only by default, so it never runs your statement; opt into `analyze` for real timing on reads)
 - **Write safety** — risky operations (DELETE/UPDATE without WHERE, DROP, TRUNCATE) require explicit confirmation
-- **Browser GUI** — paginated data grid, inline cell editing, row delete, schema view, SQL editor
+- **Browser GUI** — paginated data grid, inline cell editing, row delete, schema view, SQL editor with EXPLAIN + timing
+- **ERD visualizer** — an interactive entity-relationship diagram per connection, with foreign-key edges and click-to-open tables
+- **Unified multi-project dashboard** — open several projects in Claude Code at once and see them all in one GUI, grouped by project, each connection labeled with its host/database
 - **Live agent feed** — watch every MCP tool call stream in real time in the browser
-- **Shared multi-project GUI** — open multiple projects in Claude Code at once; the first sqlmate-mcp process hosts the GUI and later ones attach to it automatically, each scoped to its own connections and feed
 - **No native builds** — SQLite uses Node.js's built-in `node:sqlite` (no `node-gyp`)
 
 ---
@@ -123,9 +126,10 @@ Or a connection URL:
 DATABASE_URL=mysql://root:secret@127.0.0.1:3306/myapp
 DATABASE_URL=sqlite:///relative/path/app.db
 DATABASE_URL=sqlserver://sa:pass@localhost:1433/master
+DATABASE_URL=postgres://postgres:secret@127.0.0.1:5432/myapp
 ```
 
-Supported `DB_CONNECTION` / URL schemes: `mysql`, `mariadb`, `sqlite`, `sqlserver` / `mssql`
+Supported `DB_CONNECTION` / URL schemes: `mysql`, `mariadb`, `sqlite`, `sqlserver` / `mssql`, `pgsql` / `postgres` / `postgresql`
 
 ### Option 2 — `.sqlmaterc` file
 
@@ -156,6 +160,15 @@ Place a JSON array of connection objects in your project root:
     "password": "YourPassword123",
     "database": "master",
     "options": { "trustServerCertificate": true }
+  },
+  {
+    "name": "Local Postgres",
+    "type": "postgres",
+    "host": "127.0.0.1",
+    "port": 5432,
+    "username": "postgres",
+    "password": "",
+    "database": "myapp"
   }
 ]
 ```
@@ -169,9 +182,12 @@ A copy-paste starting point is in [`docs/sqlmaterc-example.json`](docs/sqlmaterc
 | Tool | Description |
 |------|-------------|
 | `list_connections` | List all detected connections (id, name, type, source) |
+| `add_connection` | Add a connection for the session via URL, a config file, or individual params |
 | `list_tables(connectionId)` | List table names for a connection |
 | `describe_table(connectionId, table)` | Column names, types, nullability, and primary key info |
+| `get_schema(connectionId, [table])` | Full schema graph — every table's columns, primary keys, foreign keys, and indexes (or a single table) |
 | `run_query(connectionId, sql)` | Run a read-only query (SELECT, EXPLAIN, SHOW, PRAGMA) |
+| `explain_query(connectionId, sql, [analyze])` | Return the query execution plan; `analyze` runs the query for real timing (read-only statements only) |
 | `run_write(connectionId, sql)` | Run an INSERT, UPDATE, DELETE, or DDL statement |
 
 `run_write` performs risk assessment before executing. Operations that affect all rows (no WHERE clause), DROP, TRUNCATE, or ALTER...DROP COLUMN will pause and ask Claude to confirm with `confirm: true` before proceeding.
@@ -186,7 +202,8 @@ Opens automatically at `http://localhost:4737` on startup.
 - Click a cell to edit it inline
 - Delete rows with the trash icon
 - Toggle between data view and column schema view
-- Run arbitrary SQL in the built-in SQL editor
+- Run arbitrary SQL in the built-in SQL editor, with an **Explain** button for the execution plan and per-query timing
+- Visualize a database as an interactive **ERD** — tables with primary/foreign-key badges, relationship edges, and click-to-open
 - Reconnect a database without restarting the server
 - Watch a live feed of every MCP tool call Claude makes
 
@@ -194,11 +211,12 @@ Opens automatically at `http://localhost:4737` on startup.
 
 ## Multiple Projects
 
-If you have Claude Code (or Zed) open in more than one project at a time, each one runs its own sqlmate-mcp server process — but only one browser GUI is needed.
+If you have Claude Code (or Zed) open in more than one project at a time, each one runs its own sqlmate-mcp server process — but only one browser GUI is needed, and it shows **all** of your projects at once.
 
-- The first process to start binds the GUI port (`SQLMATE_PORT`, default `4737`) and becomes the **host**.
-- Every other process detects the port is taken, confirms it's a compatible sqlmate-mcp host, and **attaches** to it instead of failing or opening a second GUI.
-- Each attached project's tables, SQL editor, and live agent feed are scoped to its own tab — one project can't see another's connections, queries, or errors.
+- The first process to start binds the GUI port (`SQLMATE_PORT`, default `4737`), becomes the **host**, and opens the browser.
+- Every other process detects the port is taken, confirms it's a compatible sqlmate-mcp host, and **attaches** to it instead of failing or opening a second tab.
+- The GUI is a **unified dashboard**: the sidebar groups connections by project (each labeled with its host/database), and you can open tables, run SQL, and view ERDs from any project side by side. The live agent feed shows tool activity across every project, labeled by project.
+- When only one project is registered, the sidebar shows its connections directly with no group chrome.
 - If the host process exits, one of the remaining attached processes automatically takes over as the new host, so the GUI keeps working.
 
 This is automatic and requires no configuration. It only matters if you're running multiple sqlmate-mcp versions side by side — an attaching process checks the host's protocol version and simply skips the GUI (falling back to MCP-tools-only) if they don't match, rather than erroring.

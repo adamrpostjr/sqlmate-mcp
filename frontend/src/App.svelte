@@ -1,13 +1,14 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { AppBar } from '@skeletonlabs/skeleton-svelte'
-  import { ActivityIcon, DatabaseIcon, XIcon, AlertCircleIcon, CheckCircleIcon, Loader2Icon, FolderIcon } from '@lucide/svelte'
+  import { ActivityIcon, DatabaseIcon, XIcon, AlertCircleIcon, CheckCircleIcon, Loader2Icon, NetworkIcon } from '@lucide/svelte'
   import { store } from './lib/store.svelte.js'
-  import { loadConnections, loadInfo, closeTab, activateTab } from './lib/api.js'
+  import { loadInfo, closeTab, activateTab } from './lib/api.js'
   import Sidebar from './lib/Sidebar.svelte'
   import DataGrid from './lib/DataGrid.svelte'
   import SchemaView from './lib/SchemaView.svelte'
   import SqlEditor from './lib/SqlEditor.svelte'
+  import ErdView from './lib/ErdView.svelte'
   import AgentFeed from './lib/AgentFeed.svelte'
   import JsonPane from './lib/JsonPane.svelte'
 
@@ -17,12 +18,11 @@
   onMount(async () => {
     try {
       await loadInfo()
-      await loadConnections()
     } catch (err) {
       store.addToast('Failed to connect to sqlmate server: ' + err.message)
     }
 
-    es = new EventSource(`/api/events?projectId=${encodeURIComponent(store.projectId ?? '')}`)
+    es = new EventSource('/api/events?all=1')
     es.addEventListener('tool_start', (e) => store.applyAgentEvent('tool_start', JSON.parse(e.data)))
     es.addEventListener('tool_end', (e) => store.applyAgentEvent('tool_end', JSON.parse(e.data)))
     es.addEventListener('projects_changed', (e) => store.applyAgentEvent('projects_changed', JSON.parse(e.data)))
@@ -54,26 +54,24 @@
   <!-- ── AppBar ──────────────────────────────────────────────────────────── -->
   <AppBar spaceY="" padding="px-4 py-2">
     {#snippet lead()}
-      <div class="flex flex-col">
-        <div class="flex items-center gap-2">
-          <DatabaseIcon class="size-4 text-primary-500" />
-          <span class="font-mono font-bold tracking-widest text-sm">sqlmate</span>
-        </div>
-        {#if store.projectRoot}
-          <div class="flex items-center gap-1 text-[10px] text-surface-500 font-mono leading-none mt-0.5" title={store.projectRoot}>
-            <FolderIcon class="size-2.5 flex-shrink-0" />
-            <span class="truncate max-w-48">{store.projectRoot}</span>
-          </div>
-        {/if}
+      <div class="flex items-center gap-2">
+        <DatabaseIcon class="size-4 text-primary-500" />
+        <span class="font-mono font-bold tracking-widest text-sm">sqlmate</span>
       </div>
-      {#if store.activeTab && !store.isSqlTab(store.activeTab)}
+      {#if store.activeTab && !store.isSqlTab(store.activeTab) && !store.isErdTab(store.activeTab)}
         <span class="hidden sm:flex items-center gap-1 text-sm font-mono text-surface-500 ml-4">
-          {store.connections.find(c => c.id === store.activeTab.connId)?.name || store.activeTab.connId}
+          {#if store.projects.length > 1}
+            <span class="text-surface-400">{store.projectName(store.activeTab.projectId)}</span>
+            <span class="mx-1 opacity-40">/</span>
+          {/if}
+          {store.getConnection(store.activeTab.projectId, store.activeTab.connId)?.name || store.activeTab.connId}
           <span class="mx-1 opacity-40">/</span>
           <span class="text-primary-400">{store.activeTab.table}</span>
         </span>
       {:else if store.activeTab?.view === 'sql'}
         <span class="hidden sm:inline text-sm font-mono text-warning-400 ml-4">SQL Editor</span>
+      {:else if store.activeTab?.view === 'erd'}
+        <span class="hidden sm:inline text-sm font-mono text-primary-400 ml-4">ERD</span>
       {/if}
     {/snippet}
     {#snippet trail()}
@@ -114,8 +112,14 @@
                      {isActive ? 'bg-surface-50-950 text-primary-500 border-b-2 border-b-primary-500 -mb-px' : 'text-surface-600-400 hover:bg-surface-200-800/60'}"
               onclick={(e) => handleTabClick(e, tab.id)}
             >
+              {#if store.projects.length > 1}
+                <span class="text-[10px] text-surface-500 opacity-70">{store.projectName(tab.projectId)}/</span>
+              {/if}
               {#if store.isSqlTab(tab)}
                 <span class="font-mono text-warning-400 text-xs leading-none">&gt;_</span>
+                <span class="text-xs">{tab.name || tab.connId}</span>
+              {:else if store.isErdTab(tab)}
+                <NetworkIcon class="size-3 text-primary-400" />
                 <span class="text-xs">{tab.name || tab.connId}</span>
               {:else}
                 <span class="font-mono text-xs opacity-50 leading-none">⊞</span>
@@ -140,11 +144,13 @@
             <p class="text-sm">Open a table from the sidebar to get started</p>
           </div>
         {:else if store.activeTab.view === 'data'}
-          <DataGrid connId={store.activeTab.connId} table={store.activeTab.table} />
+          <DataGrid projectId={store.activeTab.projectId} connId={store.activeTab.connId} table={store.activeTab.table} />
         {:else if store.activeTab.view === 'schema'}
-          <SchemaView connId={store.activeTab.connId} table={store.activeTab.table} />
+          <SchemaView projectId={store.activeTab.projectId} connId={store.activeTab.connId} table={store.activeTab.table} />
         {:else if store.activeTab.view === 'sql'}
-          <SqlEditor connId={store.activeTab.connId} tabId={store.activeTab.id} />
+          <SqlEditor projectId={store.activeTab.projectId} connId={store.activeTab.connId} tabId={store.activeTab.id} />
+        {:else if store.activeTab.view === 'erd'}
+          <ErdView projectId={store.activeTab.projectId} connId={store.activeTab.connId} />
         {/if}
       </div>
     </main>

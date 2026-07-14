@@ -14,6 +14,7 @@ export function parseConnectionUrl(urlStr) {
     if (scheme === 'mysql' || scheme === 'mysql2' || scheme === 'mariadb') type = 'mysql'
     else if (scheme === 'sqlite' || scheme === 'sqlite3') type = 'sqlite'
     else if (scheme === 'sqlserver' || scheme === 'mssql') type = 'mssql'
+    else if (scheme === 'postgres' || scheme === 'postgresql' || scheme === 'pg') type = 'postgres'
     else return null
 
     if (type === 'sqlite') {
@@ -21,12 +22,13 @@ export function parseConnectionUrl(urlStr) {
       return { type, path: dbPath, name: 'ENV SQLite', source: '.env' }
     }
 
+    const defaultPort = type === 'postgres' ? 5432 : (type === 'mssql' ? 1433 : 3306)
     return {
       type,
       name: `ENV ${type.toUpperCase()}`,
       source: '.env',
       host: url.hostname || '127.0.0.1',
-      port: url.port ? parseInt(url.port) : (type === 'mssql' ? 1433 : 3306),
+      port: url.port ? parseInt(url.port) : defaultPort,
       username: url.username ? decodeURIComponent(url.username) : undefined,
       password: url.password ? decodeURIComponent(url.password) : undefined,
       database: url.pathname.replace(/^\//, '') || undefined,
@@ -42,10 +44,12 @@ export function inferTypeFromEnv(parsed) {
   if (conn === 'mysql' || conn === 'mariadb') return 'mysql'
   if (conn === 'sqlite') return 'sqlite'
   if (conn === 'sqlserver' || conn === 'mssql' || conn === 'sqlsrv') return 'mssql'
+  if (conn === 'pgsql' || conn === 'postgres' || conn === 'postgresql') return 'postgres'
 
   const port = parseInt(parsed.DB_PORT)
   if (port === 3306) return 'mysql'
   if (port === 1433) return 'mssql'
+  if (port === 5432) return 'postgres'
 
   return null
 }
@@ -74,7 +78,7 @@ export function buildFromEnv(parsed) {
     name: `ENV ${type.toUpperCase()}`,
     source: '.env',
     host: parsed.DB_HOST || '127.0.0.1',
-    port: parsed.DB_PORT ? parseInt(parsed.DB_PORT) : (type === 'mssql' ? 1433 : 3306),
+    port: parsed.DB_PORT ? parseInt(parsed.DB_PORT) : (type === 'mssql' ? 1433 : (type === 'postgres' ? 5432 : 3306)),
     username: parsed.DB_USERNAME || parsed.DB_USER,
     password: parsed.DB_PASSWORD || parsed.DB_PASS || '',
     database: parsed.DB_DATABASE || parsed.DB_NAME,
@@ -132,7 +136,7 @@ export function parseConnectionInput(input, existing = []) {
 
   if (input.url) {
     const conn = parseConnectionUrl(input.url)
-    if (!conn) throw new Error('Unrecognized URL scheme. Supported: mysql://, sqlite://, sqlserver://')
+    if (!conn) throw new Error('Unrecognized URL scheme. Supported: mysql://, sqlite://, sqlserver://, postgres://')
     if (input.name) conn.name = input.name
     conn.source = 'tool'
     conn.projectRoot = null
@@ -141,8 +145,8 @@ export function parseConnectionInput(input, existing = []) {
 
   if (!input.type) throw new Error('Provide url, file, or type + connection params')
   const type = input.type.toLowerCase()
-  if (!['mysql', 'sqlite', 'mssql'].includes(type)) {
-    throw new Error(`Unsupported type "${input.type}". Use: mysql, sqlite, mssql`)
+  if (!['mysql', 'sqlite', 'mssql', 'postgres'].includes(type)) {
+    throw new Error(`Unsupported type "${input.type}". Use: mysql, sqlite, mssql, postgres`)
   }
   const conn = normalizeRcEntry({ ...input, source: 'tool' })
   conn.projectRoot = null

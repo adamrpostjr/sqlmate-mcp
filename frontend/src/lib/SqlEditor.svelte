@@ -1,12 +1,13 @@
 <script>
-  import { PlayIcon, Loader2Icon, TerminalIcon, Trash2Icon } from '@lucide/svelte'
+  import { PlayIcon, Loader2Icon, TerminalIcon, Trash2Icon, GaugeIcon } from '@lucide/svelte'
   import { store } from './store.svelte.js'
-  import { api, connectionPath } from './api.js'
+  import { api, connectionPath, runExplain } from './api.js'
 
-  let { connId, tabId } = $props()
+  let { projectId, connId, tabId } = $props()
 
-  const conn = $derived(store.connections.find(c => c.id === connId))
+  const conn = $derived(store.getConnection(projectId, connId))
   const loading = $derived(!!store.loading[`sql:${tabId}`])
+  const explaining = $derived(!!store.loading[`explain:${tabId}`])
   const result = $derived(store.sqlResults[tabId])
   // Initialise from store snapshot; tabId is stable for a given editor instance
   const initSql = store.sqlContent[tabId] || ''
@@ -18,13 +19,18 @@
     if (!sql.trim()) return
     store.loading[`sql:${tabId}`] = true
     try {
-      const res = await api('POST', connectionPath(connId, '/query'), { sql })
+      const res = await api('POST', connectionPath(projectId, connId, '/query'), { sql })
       store.sqlResults[tabId] = res
     } catch (err) {
       store.sqlResults[tabId] = { rows: [], columns: [], error: err.message }
     } finally {
       delete store.loading[`sql:${tabId}`]
     }
+  }
+
+  async function explainSql() {
+    if (!sql.trim()) return
+    await runExplain(projectId, connId, tabId, sql, false)
   }
 
   function sqlKeydown(e) {
@@ -78,6 +84,19 @@
         {/if}
         Run
       </button>
+      <button
+        class="btn btn-sm preset-tonal gap-1.5"
+        onclick={explainSql}
+        disabled={explaining || !sql.trim()}
+        title="Show the query execution plan without running it"
+      >
+        {#if explaining}
+          <Loader2Icon class="size-3.5 animate-spin" />
+        {:else}
+          <GaugeIcon class="size-3.5" />
+        {/if}
+        Explain
+      </button>
       {#if result}
         <button class="btn btn-sm preset-tonal gap-1" onclick={clearResults}>
           <Trash2Icon class="size-3" /> Clear
@@ -93,12 +112,30 @@
       <div class="flex items-center justify-center h-16 gap-2 text-surface-500 text-sm">
         <Loader2Icon class="size-4 animate-spin" /> Running query...
       </div>
+    {:else if explaining}
+      <div class="flex items-center justify-center h-16 gap-2 text-surface-500 text-sm">
+        <Loader2Icon class="size-4 animate-spin" /> Building execution plan...
+      </div>
+    {:else if result?.plan !== undefined && result.plan !== null}
+      <div class="text-xs text-surface-500 px-4 py-1.5 border-b border-surface-200-800">
+        Execution plan ({result.planFormat})
+      </div>
+      {#if result.planFormat === 'query_plan' && Array.isArray(result.plan)}
+        <pre class="p-4 font-mono text-xs whitespace-pre-wrap">{result.plan.map(r => `${'  '.repeat(r.id ?? 0)}${r.detail ?? JSON.stringify(r)}`).join('\n')}</pre>
+      {:else if result.planFormat === 'json'}
+        <pre class="p-4 font-mono text-xs whitespace-pre-wrap">{JSON.stringify(result.plan, null, 2)}</pre>
+      {:else}
+        <pre class="p-4 font-mono text-xs whitespace-pre-wrap">{typeof result.plan === 'string' ? result.plan : JSON.stringify(result.plan, null, 2)}</pre>
+      {/if}
     {:else if result?.error}
       <div class="p-4 text-error-400 font-mono text-sm">{result.error}</div>
     {:else if result?.rows?.length > 0}
       {@const columns = result.columns?.length ? result.columns : Object.keys(result.rows[0])}
-      <div class="text-xs text-surface-500 px-4 py-1.5 border-b border-surface-200-800">
-        {result.rows.length} row{result.rows.length !== 1 ? 's' : ''}
+      <div class="text-xs text-surface-500 px-4 py-1.5 border-b border-surface-200-800 flex items-center gap-2">
+        <span>{result.rows.length} row{result.rows.length !== 1 ? 's' : ''}</span>
+        {#if typeof result.durationMs === 'number'}
+          <span class="text-surface-400">· {result.durationMs} ms</span>
+        {/if}
       </div>
       <table class="w-full text-xs border-collapse">
         <thead>

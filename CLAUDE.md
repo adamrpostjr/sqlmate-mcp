@@ -34,8 +34,8 @@ Pure Node.js ES modules, no TypeScript, no build step.
 | File | Role |
 |------|------|
 | `src/index.js` | Entry point. Loads connections, decides whether this process becomes the GUI host or attaches to an existing one, auto-opens browser |
-| `src/mcp.js` | 5 MCP tools (`list_connections`, `list_tables`, `describe_table`, `run_query`, `run_write`). Includes 2-step confirmation for risky write operations via `assessRisk()` |
-| `src/drivers.js` | Driver implementations for MySQL/MariaDB (`mysql2`), SQLite (native `node:sqlite`), MSSQL (`mssql`). Each exposes a uniform interface: `listTables`, `describeTable`, `runQuery`, `runWrite`, `getPaginatedRows`, `updateRow`, `deleteRow`, `close` |
+| `src/mcp.js` | 8 MCP tools (`list_connections`, `add_connection`, `list_tables`, `describe_table`, `get_schema`, `run_query`, `explain_query`, `run_write`). Includes 2-step confirmation for risky write operations via `assessRisk()` |
+| `src/drivers.js` | Driver implementations for MySQL/MariaDB (`mysql2`), SQLite (native `node:sqlite`), MSSQL (`mssql`), PostgreSQL (`pg`). Each exposes a uniform interface: `listTables`, `describeTable`, `runQuery`, `runWrite`, `getPaginatedRows`, `updateRow`, `deleteRow`, `close` |
 | `src/connections.js` | Reads `.env` (Laravel-style `DB_*` vars or `DATABASE_URL`) and `.sqlmaterc` (JSON array) from `SQLMATE_PROJECT_ROOT` (defaults to `cwd`) |
 | `src/gui.js` | Express REST API on port 4737 (the host process only). Serves the built Svelte app from `/public`, project-scoped connection/table/row CRUD routes, the `/api/host/*` uplink routes used by attached processes, and the SSE stream (`/api/events`) for the live agent feed |
 | `src/attach.js` | Client-side uplink used when another process already owns the GUI port: probes `/api/info`, registers this project with the host, sends heartbeats, forwards local tool events, and triggers host takeover (`becomeHostOrAttach` in `index.js`) if the host disappears |
@@ -52,7 +52,7 @@ Only one sqlmate-mcp process per machine binds the GUI port (`SQLMATE_PORT`, def
 3. If compatible, it calls `startAttach()`, which registers the project's connections with the host (`POST /api/host/register`), heartbeats every `HEARTBEAT_MS` (`POST /api/host/heartbeat`), and forwards `tool_start`/`tool_end` events (`POST /api/host/events`) so the shared GUI's live feed covers all attached projects.
 4. If the host goes away (heartbeat fails), the attached process's `onHostGone` callback fires and it re-runs `becomeHostOrAttach()` — racing to become the new host or attach to whichever process wins.
 
-The GUI's `/api/events` SSE stream and REST routes are project-scoped (`/api/projects/:projectId/...`) and fail closed on a missing/empty `projectId` — one browser tab must never see another attached project's SQL, errors, or connection details.
+The GUI's `/api/events` SSE stream and REST routes are project-scoped (`/api/projects/:projectId/...`) and fail closed on a missing/empty `projectId` by default. The unified dashboard opts into `/api/events?all=1`, which streams every project's `projects_changed` snapshot and all projects' tool events so one browser can show all projects at once (grouped by project in the sidebar). `?all=1` is the only way to get cross-project visibility — the scoped/fail-closed default stays for any other consumer. Only the process that binds the GUI port opens a browser tab; attached processes never do.
 
 ### Frontend (`frontend/`)
 
@@ -63,7 +63,7 @@ Key components: `App.svelte` (layout), `store.svelte.js` (reactive state), `api.
 ### Connection Config
 
 Connections are loaded from the project being served (not this repo itself):
-- **`.env`** — `DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, or `DATABASE_URL`
+- **`.env`** — `DB_CONNECTION` (`mysql`/`mariadb`/`sqlite`/`mssql`/`sqlsrv`/`pgsql`/`postgres`/`postgresql`), `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, or `DATABASE_URL`
 - **`.sqlmaterc`** — JSON array of connection objects (see `docs/sqlmaterc-example.json`)
 
 ### Environment Variables

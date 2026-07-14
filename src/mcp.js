@@ -184,15 +184,15 @@ export async function startMcpServer(connections, projectRoot, { transport } = {
     'add_connection',
     [
       'Configure a database connection for this session.',
-      'Provide ONE of: (a) url — a connection URL like mysql://user:pass@host:3306/db or sqlite:///path/to/db.sqlite,',
+      'Provide ONE of: (a) url — a connection URL like mysql://user:pass@host:3306/db, sqlite:///path/to/db.sqlite, or postgres://user:pass@host:5432/db,',
       '(b) file — an absolute path to a .sqlmaterc (JSON) or .env file containing DB credentials,',
-      '(c) individual params — type (mysql|sqlite|mssql), host, port, username, password, database, and optionally name.',
+      '(c) individual params — type (mysql|sqlite|mssql|postgres), host, port, username, password, database, and optionally name.',
       'After adding, call list_connections to verify.'
     ].join(' '),
     {
-      url: z.string().optional().describe('Connection URL (mysql://, sqlite://, sqlserver://)'),
+      url: z.string().optional().describe('Connection URL (mysql://, sqlite://, sqlserver://, postgres://)'),
       file: z.string().optional().describe('Absolute path to a .sqlmaterc or .env file'),
-      type: z.enum(['mysql', 'sqlite', 'mssql']).optional().describe('Database type'),
+      type: z.enum(['mysql', 'sqlite', 'mssql', 'postgres']).optional().describe('Database type'),
       host: z.string().optional().describe('Database host'),
       port: z.number().optional().describe('Database port'),
       username: z.string().optional().describe('Database username'),
@@ -260,6 +260,36 @@ export async function startMcpServer(connections, projectRoot, { transport } = {
   )
 
   server.tool(
+    'get_schema',
+    'Get the full schema graph for a connection — every table with its columns, primary keys, foreign keys, and indexes. Use this to understand a database and the relationships between tables in one call.',
+    {
+      connectionId: z.string().describe('Connection ID from list_connections'),
+      table: z.string().optional().describe('If provided, return only this table\'s schema'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
+    },
+    async ({ connectionId, table, project_root }) => {
+      const ctx = emitStart('get_schema', connectionId, { connectionId, table }, project_root ?? projectRoot)
+      try {
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
+        const driver = await getDriver(conn)
+        let result
+        if (table) {
+          const [columns, foreignKeys, indexes] = await Promise.all([
+            driver.describeTable(table),
+            driver.getForeignKeys(table),
+            driver.getIndexes(table)
+          ])
+          result = { name: table, columns, foreignKeys, indexes }
+        } else {
+          result = await driver.getSchemaGraph()
+        }
+        emitEnd(ctx, result)
+        return ok(result)
+      } catch (err) { emitError(ctx, err); return fail(err) }
+    }
+  )
+
+  server.tool(
     'run_query',
     'Run a read-only SQL query (SELECT, EXPLAIN, SHOW, PRAGMA). Write statements are rejected.',
     {
@@ -273,6 +303,27 @@ export async function startMcpServer(connections, projectRoot, { transport } = {
         const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
         const driver = await getDriver(conn)
         const result = await driver.runQuery(sql)
+        emitEnd(ctx, result)
+        return ok(result)
+      } catch (err) { emitError(ctx, err); return fail(err) }
+    }
+  )
+
+  server.tool(
+    'explain_query',
+    'Get the query execution plan (EXPLAIN) for a SQL statement without running it. Set analyze=true to actually execute a read-only query and get real timing (rejected for writes). Use to diagnose slow queries and missing indexes.',
+    {
+      connectionId: z.string().describe('Connection ID from list_connections'),
+      sql: z.string().describe('The SQL statement to explain'),
+      analyze: z.boolean().optional().describe('Run the query and include real execution timing (read-only statements only)'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
+    },
+    async ({ connectionId, sql, analyze, project_root }) => {
+      const ctx = emitStart('explain_query', connectionId, { sql: redactSecrets(sql).slice(0, 300), analyze }, project_root ?? projectRoot)
+      try {
+        const conn = resolveConnection(connections, connectionId, project_root ?? projectRoot)
+        const driver = await getDriver(conn)
+        const result = await driver.explainQuery(sql, { analyze })
         emitEnd(ctx, result)
         return ok(result)
       } catch (err) { emitError(ctx, err); return fail(err) }

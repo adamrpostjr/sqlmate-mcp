@@ -1,8 +1,36 @@
-import { test, describe } from 'node:test'
+import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
+import os from 'node:os'
+import path from 'node:path'
+import fs from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { startGuiServer } from '../src/gui.js'
 import { ProjectRegistry } from '../src/registry.js'
 import { PROTOCOL_VERSION } from '../src/protocol.js'
+import { closeAll } from '../src/drivers.js'
+
+const fixtureFiles = []
+function makeSqliteFixture(name) {
+  const file = path.join(os.tmpdir(), `sqlmate-gui-test-${name}-${process.pid}.sqlite`)
+  fixtureFiles.push(file)
+  if (fs.existsSync(file)) fs.rmSync(file)
+  const db = new DatabaseSync(file)
+  db.exec('PRAGMA foreign_keys = ON')
+  db.exec('CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT)')
+  db.exec('CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT, author_id INTEGER REFERENCES authors(id))')
+  db.exec('CREATE INDEX idx_books_title ON books(title)')
+  db.close()
+  return file
+}
+
+after(async () => {
+  await closeAll()
+  for (const file of fixtureFiles) {
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.rmSync(file + suffix) } catch {}
+    }
+  }
+})
 
 // Boots a real server on an ephemeral port so we can exercise the host
 // protocol/registry-backed routes end to end with the platform's fetch.
@@ -100,6 +128,28 @@ describe('GET /api/projects/:projectId/connections', () => {
     await withServer(async ({ base }) => {
       const { status } = await json(`${base}/api/projects/does-not-exist/connections`)
       assert.equal(status, 404)
+    })
+  })
+})
+
+describe('GET /api/projects/:projectId/connections/:id/schema-graph', () => {
+  test('returns the schema graph for a real sqlite connection', async () => {
+    await withServer(async ({ base, registry }) => {
+      const file = makeSqliteFixture('schema-graph')
+      const conn = { name: 'SQ', type: 'sqlite', path: file, source: 'test' }
+      const { projectId } = registry.register({ projectRoot: '/proj/schema-graph', connections: [conn], self: true })
+      const connId = registry.snapshot().find(p => p.projectId === projectId).connections[0].id
+
+      const { status, body } = await json(`${base}/api/projects/${projectId}/connections/${connId}/schema-graph`)
+      assert.equal(status, 200)
+      assert.ok(Array.isArray(body.tables))
+      const names = body.tables.map(t => t.name).sort()
+      assert.deepEqual(names, ['authors', 'books'])
+
+      const books = body.tables.find(t => t.name === 'books')
+      assert.equal(books.foreignKeys.length, 1)
+      assert.equal(books.foreignKeys[0].refTable, 'authors')
+      assert.ok(books.indexes.some(idx => idx.columns.includes('title')))
     })
   })
 })
@@ -269,6 +319,35 @@ describe('GET /api/events', () => {
 
       assert.ok(buf.includes('/proj/a'), 'own project should still be visible')
       assert.ok(!buf.includes('/proj/secret-client'), 'another project\'s path must not leak into this tab\'s snapshot')
+    })
+  })
+
+  test('with ?all=1 the unified dashboard sees every project in the snapshot', async () => {
+    await withServer(async ({ base, registry }) => {
+      const { projectId: idA } = registry.register({ projectRoot: '/proj/a', connections: [], self: true })
+      const { projectId: idB } = registry.register({ projectRoot: '/proj/b', connections: [] })
+
+      const sse = await collectSse(`${base}/api/events?all=1`)
+      const buf = await sse.finish()
+
+      assert.ok(buf.includes(idA), 'own project should be visible')
+      assert.ok(buf.includes(idB), 'other projects should be visible in the unified view')
+      assert.ok(buf.includes('/proj/a') && buf.includes('/proj/b'), 'all project roots should be present')
+    })
+  })
+
+  test('with ?all=1 tool activity from every project is forwarded', async () => {
+    await withServer(async ({ base, registry }) => {
+      registry.register({ projectRoot: '/proj/a', connections: [], self: true })
+      registry.register({ projectRoot: '/proj/b', connections: [] })
+
+      const sse = await collectSse(`${base}/api/events?all=1`)
+      registry.handleToolEvent('tool_start', { id: 'from-a', tool: 'run_query', projectRoot: '/proj/a' })
+      registry.handleToolEvent('tool_start', { id: 'from-b', tool: 'run_query', projectRoot: '/proj/b' })
+      const buf = await sse.finish()
+
+      assert.ok(buf.includes('"id":"from-a"'), 'own project event should appear')
+      assert.ok(buf.includes('"id":"from-b"'), 'other project event should appear in the unified feed')
     })
   })
 })

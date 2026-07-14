@@ -1,21 +1,21 @@
 class AppStore {
-  // Connection data
-  connections = $state([])
-  projectId = $state(null)
-  projectRoot = $state(null)
+  // Project / connection data
+  selfProjectId = $state(null)
+  projects = $state([])        // [{ projectId, projectRoot, connections: [...] }]
 
   // Sidebar
-  expandedConns = $state({})   // connId → boolean
-  connTables = $state({})      // connId → string[]
+  expandedConns = $state({})   // `${projectId}::${connId}` → boolean
+  connTables = $state({})      // `${projectId}::${connId}` → string[]
 
   // Tabs
-  openTabs = $state([])        // [{ id, connId, table, view: 'data'|'schema'|'sql', name? }]
+  openTabs = $state([])        // [{ id, projectId, connId, table, view: 'data'|'schema'|'sql'|'erd', name? }]
   activeTabId = $state(null)
 
   // Per-tab data
   currentPage = $state({})     // tabId → 0-indexed page
   tableData = $state({})       // tabId → { rows, total, columns }
-  schemaCache = $state({})     // `connId:table` → columns[]
+  schemaCache = $state({})     // `${projectId}::${connId}:${table}` → columns[]
+  schemaGraph = $state({})     // `${projectId}::${connId}` → { tables: [...] }
   sqlContent = $state({})      // tabId → sql string
   sqlResults = $state({})      // tabId → { rows, columns, error? }
   loading = $state({})         // key → boolean
@@ -34,25 +34,55 @@ class AppStore {
     return this.openTabs.find(t => t.id === this.activeTabId) || null
   }
 
-  tabId(connId, table) {
-    return `${connId}__${table}`
+  // Composite key for anything keyed by (projectId, connId) — connId is only
+  // unique WITHIN a project, so every cross-project cache must use this.
+  ck(projectId, connId) {
+    return `${projectId}::${connId}`
   }
 
-  sqlTabId(connId) {
-    return `sql__${connId}`
+  tabId(projectId, connId, table) {
+    return `${projectId}__${connId}__${table}`
+  }
+
+  sqlTabId(projectId, connId) {
+    return `sql__${projectId}__${connId}`
   }
 
   isSqlTab(tab) {
     return tab?.view === 'sql'
   }
 
-  getSchema(connId, table) {
-    return this.schemaCache[`${connId}:${table}`] || []
+  erdTabId(projectId, connId) {
+    return `erd__${projectId}__${connId}`
   }
 
-  getPkColumn(connId, table) {
-    const schema = this.getSchema(connId, table)
+  isErdTab(tab) {
+    return tab?.view === 'erd'
+  }
+
+  getSchema(projectId, connId, table) {
+    return this.schemaCache[`${this.ck(projectId, connId)}:${table}`] || []
+  }
+
+  getPkColumn(projectId, connId, table) {
+    const schema = this.getSchema(projectId, connId, table)
     return schema.find(c => c.pk)?.column || schema[0]?.column || null
+  }
+
+  getProject(projectId) {
+    return this.projects.find(p => p.projectId === projectId) || null
+  }
+
+  getConnection(projectId, connId) {
+    return this.getProject(projectId)?.connections?.find(c => c.id === connId) || null
+  }
+
+  projectName(projectId) {
+    const project = this.getProject(projectId)
+    const root = project?.projectRoot
+    if (!root) return projectId
+    const parts = root.replace(/[\\/]+$/, '').split(/[\\/]/)
+    return parts[parts.length - 1] || projectId
   }
 
   addToast(message, type = 'error') {
@@ -70,16 +100,21 @@ class AppStore {
   }
 
   // Remove all state tied to a connection that no longer exists.
-  pruneConnection(connId) {
-    delete this.connTables[connId]
-    delete this.expandedConns[connId]
-    for (const key of Object.keys(this.schemaCache)) {
-      if (key.split(':')[0] === connId) delete this.schemaCache[key]
+  pruneConnection(projectId, connId) {
+    const key = this.ck(projectId, connId)
+    delete this.connTables[key]
+    delete this.expandedConns[key]
+    delete this.schemaGraph[key]
+    const schemaPrefix = `${key}:`
+    for (const cacheKey of Object.keys(this.schemaCache)) {
+      if (cacheKey.startsWith(schemaPrefix)) delete this.schemaCache[cacheKey]
     }
-    // Close any tabs belonging to this connection and drop their per-tab state.
-    const removedTabIds = this.openTabs.filter(t => t.connId === connId).map(t => t.id)
+    // Close any tabs belonging to this (projectId, connId) and drop their per-tab state.
+    const removedTabIds = this.openTabs
+      .filter(t => t.projectId === projectId && t.connId === connId)
+      .map(t => t.id)
     if (removedTabIds.length) {
-      this.openTabs = this.openTabs.filter(t => t.connId !== connId)
+      this.openTabs = this.openTabs.filter(t => !(t.projectId === projectId && t.connId === connId))
       for (const tabId of removedTabIds) {
         delete this.currentPage[tabId]
         delete this.tableData[tabId]
@@ -95,12 +130,23 @@ class AppStore {
 
   applyAgentEvent(type, data) {
     if (type === 'projects_changed') {
-      const mine = data.find(p => p.projectId === this.projectId)
-      const newConns = mine?.connections ?? []
-      const newIds = new Set(newConns.map(c => c.id))
-      const goneIds = this.connections.map(c => c.id).filter(id => !newIds.has(id))
-      for (const connId of goneIds) this.pruneConnection(connId)
-      this.connections = newConns
+      // `data` is the full snapshot of ALL projects. Reconcile: prune any
+      // (projectId, connId) pair that existed before but is gone now —
+      // this also covers whole projects vanishing, since all their
+      // connections disappear at once.
+      const stillPresent = new Set()
+      for (const p of data) {
+        for (const c of p.connections ?? []) {
+          stillPresent.add(this.ck(p.projectId, c.id))
+        }
+      }
+      for (const p of this.projects) {
+        for (const c of p.connections ?? []) {
+          const key = this.ck(p.projectId, c.id)
+          if (!stillPresent.has(key)) this.pruneConnection(p.projectId, c.id)
+        }
+      }
+      this.projects = data
       return
     }
     if (type === 'tool_start') {

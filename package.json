@@ -1,6 +1,6 @@
 {
   "name": "sqlmate-mcp",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Zero-config SQL database MCP server + browser GUI for Claude Code",
   "type": "module",
   "bin": {

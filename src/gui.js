@@ -224,7 +224,9 @@ export function startGuiServer(registry, port) {
 
   // ── Static (built Svelte app) ──────────────────────────────────────────────
   app.use(express.static(PUBLIC_DIR))
-  app.get('*', (req, res) => {
+  // Express 5 (path-to-regexp 8) rejects the bare '*' string route; use a
+  // regex catch-all for the SPA fallback instead.
+  app.get(/.*/, (req, res) => {
     res.sendFile(path.join(PUBLIC_DIR, 'index.html'))
   })
 

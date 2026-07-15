@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "dotenv": "^16.0.0",
+    "dotenv": "^17.4.2",
     "express": "^4.21.0",
     "mssql": "^11.0.0",
     "mysql2": "^3.11.0",

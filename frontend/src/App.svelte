@@ -1,6 +1,5 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { AppBar } from '@skeletonlabs/skeleton-svelte'
   import { ActivityIcon, DatabaseIcon, XIcon, AlertCircleIcon, CheckCircleIcon, Loader2Icon, NetworkIcon } from '@lucide/svelte'
   import { store } from './lib/store.svelte.js'
   import { loadInfo, closeTab, activateTab } from './lib/api.js'
@@ -51,43 +50,43 @@
 
 <div class="h-screen flex flex-col bg-surface-50-950 text-surface-950-50 overflow-hidden">
 
-  <!-- ── AppBar ──────────────────────────────────────────────────────────── -->
-  <AppBar spaceY="" padding="px-4 py-2">
-    {#snippet lead()}
+  <!-- ── App bar ─────────────────────────────────────────────────────────── -->
+  <header class="w-full flex flex-col bg-surface-100-900 px-4 py-2">
+    <section class="flex justify-between gap-4">
       <div class="flex items-center gap-2">
         <DatabaseIcon class="size-4 text-primary-500" />
         <span class="font-mono font-bold tracking-widest text-sm">sqlmate</span>
-      </div>
-      {#if store.activeTab && !store.isSqlTab(store.activeTab) && !store.isErdTab(store.activeTab)}
-        <span class="hidden sm:flex items-center gap-1 text-sm font-mono text-surface-500 ml-4">
-          {#if store.projects.length > 1}
-            <span class="text-surface-400">{store.projectName(store.activeTab.projectId)}</span>
+        {#if store.activeTab && !store.isSqlTab(store.activeTab) && !store.isErdTab(store.activeTab)}
+          <span class="hidden sm:flex items-center gap-1 text-sm font-mono text-surface-500 ml-4">
+            {#if store.projects.length > 1}
+              <span class="text-surface-400">{store.projectName(store.activeTab.projectId)}</span>
+              <span class="mx-1 opacity-40">/</span>
+            {/if}
+            {store.getConnection(store.activeTab.projectId, store.activeTab.connId)?.name || store.activeTab.connId}
             <span class="mx-1 opacity-40">/</span>
-          {/if}
-          {store.getConnection(store.activeTab.projectId, store.activeTab.connId)?.name || store.activeTab.connId}
-          <span class="mx-1 opacity-40">/</span>
-          <span class="text-primary-400">{store.activeTab.table}</span>
-        </span>
-      {:else if store.activeTab?.view === 'sql'}
-        <span class="hidden sm:inline text-sm font-mono text-warning-400 ml-4">SQL Editor</span>
-      {:else if store.activeTab?.view === 'erd'}
-        <span class="hidden sm:inline text-sm font-mono text-primary-400 ml-4">ERD</span>
-      {/if}
-    {/snippet}
-    {#snippet trail()}
-      <button
-        class="btn btn-sm {store.agentFeedOpen ? 'preset-filled-primary-500' : 'preset-tonal'} gap-2"
-        onclick={() => store.agentFeedOpen = !store.agentFeedOpen}
-        title="Toggle agent activity feed"
-      >
-        <ActivityIcon class="size-4" />
-        <span class="hidden sm:inline text-xs">Agent Feed</span>
-        {#if store.agentEvents.some(e => e.status === 'pending')}
-          <span class="size-2 rounded-full bg-warning-400 animate-pulse inline-block"></span>
+            <span class="text-primary-400">{store.activeTab.table}</span>
+          </span>
+        {:else if store.activeTab?.view === 'sql'}
+          <span class="hidden sm:inline text-sm font-mono text-warning-400 ml-4">SQL Editor</span>
+        {:else if store.activeTab?.view === 'erd'}
+          <span class="hidden sm:inline text-sm font-mono text-primary-400 ml-4">ERD</span>
         {/if}
-      </button>
-    {/snippet}
-  </AppBar>
+      </div>
+      <div class="flex items-center gap-4">
+        <button
+          class="btn btn-sm {store.agentFeedOpen ? 'preset-filled-primary-500' : 'preset-tonal'} gap-2"
+          onclick={() => store.agentFeedOpen = !store.agentFeedOpen}
+          title="Toggle agent activity feed"
+        >
+          <ActivityIcon class="size-4" />
+          <span class="hidden sm:inline text-xs">Agent Feed</span>
+          {#if store.agentEvents.some(e => e.status === 'pending')}
+            <span class="size-2 rounded-full bg-warning-400 animate-pulse inline-block"></span>
+          {/if}
+        </button>
+      </div>
+    </section>
+  </header>
 
   <!-- ── Body ───────────────────────────────────────────────────────────── -->
   <div class="flex flex-1 overflow-hidden">

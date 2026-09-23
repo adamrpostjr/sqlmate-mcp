@@ -37,7 +37,7 @@ _That's the whole setup. It reads your existing `.env` — no config files to wr
 Most database MCP servers give the AI tools and leave **you** in the dark. sqlmate-mcp does both halves:
 
 - 🤖 **For Claude** — 8 focused tools to inspect schemas, run queries, and make guarded writes.
-- 👀 **For you** — a browser GUI that opens automatically, so you can watch what the agent touches, edit data by hand, and run your own SQL side by side.
+- 👀 **For you** — a browser GUI (run once as a background daemon, not per session) so you can watch what the agent touches, edit data by hand, and run your own SQL side by side.
 
 No API keys. No cloud. No `node-gyp`. It reads the config you already have.
 
@@ -181,7 +181,7 @@ A copy-paste starting point lives in [`docs/sqlmaterc-example.json`](docs/sqlmat
 
 ## 🖥️ Browser GUI
 
-Opens automatically at **`http://localhost:4737`** on startup.
+Available at **`http://localhost:4737`** once the [GUI daemon](#run-the-gui-as-a-standalone-daemon) is running.
 
 - 📄 Browse any table with a paginated data grid
 - ✏️ Click a cell to edit it inline; delete rows with the trash icon
@@ -207,12 +207,26 @@ Opens automatically at **`http://localhost:4737`** on startup.
 
 Open your editor in more than one project at a time and each runs its own sqlmate-mcp process — but you only ever see **one** browser GUI, showing **all** projects at once.
 
-- The first process to start binds the GUI port (`SQLMATE_PORT`, default `4737`), becomes the **host**, and opens the browser.
-- Every other process detects the port is taken, confirms it's a compatible sqlmate-mcp host, and **attaches** — no second tab, no error.
 - The sidebar groups connections by project (each labeled with its host/database); open tables, run SQL, and view ERDs across projects side by side. The live feed spans every project, labeled by project.
-- If the host exits, a remaining attached process automatically takes over — the GUI keeps working.
+- Every MCP process is **attach-only**: it never binds the GUI port itself and never opens a browser tab. It just registers its connections with whatever GUI is already running and streams its tool activity into the live feed.
 
-Fully automatic, zero configuration.
+This means the GUI's lifetime is decoupled from any single editor session — see below.
+
+### Run the GUI as a standalone daemon
+
+Instead of a browser tab popping up (and a new host getting elected) every time an editor session starts, run the GUI once as its own long-lived process and let every sqlmate-mcp process just attach to it:
+
+```bash
+sqlmate-mcp gui                       # start the GUI daemon, opens the browser once
+sqlmate-mcp gui --install-autostart   # (Windows) start it automatically at login
+sqlmate-mcp gui --uninstall-autostart # remove the login item
+```
+
+- If no daemon is running, an MCP process just logs a hint to stderr and keeps working without a GUI — it retries attaching in the background every 30s, so starting the daemon later (or after it restarts) picks the session back up without restarting your editor.
+- Running `sqlmate-mcp gui` again while one is already running just opens the browser to the existing instance instead of erroring.
+- `--install-autostart` drops a hidden startup shortcut (`%APPDATA%\...\Startup\sqlmate-gui.vbs`) that launches `sqlmate-mcp gui` at login with no visible console window.
+
+Fully optional — without it, sqlmate-mcp behaves as a normal attach-only client and simply runs with no GUI until you start one.
 
 ---
 

@@ -5,8 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Start the MCP server
+# Start the MCP server (attach-only; run by Claude Code, not you)
 npm start                    # node src/index.js
+
+# Start the standalone GUI daemon (run once, e.g. at login — see Host/Attach below)
+node src/index.js gui
+node src/index.js gui --install-autostart    # Windows: start it at login
+node src/index.js gui --uninstall-autostart
 
 # Build the frontend (Svelte → /public)
 npm run build                # installs frontend deps + vite build
@@ -25,7 +30,7 @@ No lint command is configured.
 
 ## Architecture
 
-**sqlmate-mcp** is a zero-config MCP server that exposes database tools to Claude Code and opens a browser GUI for database inspection. When multiple projects run sqlmate-mcp at once, they share a single GUI process instead of each opening its own — see "Host/Attach Architecture" below.
+**sqlmate-mcp** is a zero-config MCP server that exposes database tools to Claude Code, plus a browser GUI for database inspection that runs as a separate, long-lived **daemon** process — decoupled from any single editor/MCP session. See "Host/Attach Architecture" below.
 
 ### Backend (`src/`)
 
@@ -33,26 +38,28 @@ Pure Node.js ES modules, no TypeScript, no build step.
 
 | File | Role |
 |------|------|
-| `src/index.js` | Entry point. Loads connections, decides whether this process becomes the GUI host or attaches to an existing one, auto-opens browser |
+| `src/index.js` | Dual entry point, dispatched on `argv[2]`. No args → MCP mode: loads connections, starts the stdio MCP server, and *attaches only* to a GUI daemon if one is reachable (never binds the GUI port, never opens a browser). `gui` → GUI daemon mode: binds the GUI port and runs the shared dashboard standalone, independent of any MCP session; also handles `gui --install-autostart` / `--uninstall-autostart` (Windows login item) |
 | `src/mcp.js` | 8 MCP tools (`list_connections`, `add_connection`, `list_tables`, `describe_table`, `get_schema`, `run_query`, `explain_query`, `run_write`). Includes 2-step confirmation for risky write operations via `assessRisk()` |
 | `src/drivers.js` | Driver implementations for MySQL/MariaDB (`mysql2`), SQLite (native `node:sqlite`), MSSQL (`mssql`), PostgreSQL (`pg`). Each exposes a uniform interface: `listTables`, `describeTable`, `runQuery`, `runWrite`, `getPaginatedRows`, `updateRow`, `deleteRow`, `close` |
 | `src/connections.js` | Reads `.env` (Laravel-style `DB_*` vars or `DATABASE_URL`) and `.sqlmaterc` (JSON array) from `SQLMATE_PROJECT_ROOT` (defaults to `cwd`) |
-| `src/gui.js` | Express REST API on port 4737 (the host process only). Serves the built Svelte app from `/public`, project-scoped connection/table/row CRUD routes, the `/api/host/*` uplink routes used by attached processes, and the SSE stream (`/api/events`) for the live agent feed |
-| `src/attach.js` | Client-side uplink used when another process already owns the GUI port: probes `/api/info`, registers this project with the host, sends heartbeats, forwards local tool events, and triggers host takeover (`becomeHostOrAttach` in `index.js`) if the host disappears |
-| `src/registry.js` | `ProjectRegistry` — in-memory store of all projects (self + attached) the host knows about: registration/reconciliation of connections, heartbeat TTL + GC of stale projects, per-project connection lookup, and the `snapshot()`/`projects_changed` data sent to the GUI |
-| `src/protocol.js` | Shared constants between host and attached processes: `APP`, `PROTOCOL_VERSION` (host/attach compatibility check), `HEARTBEAT_MS`, `PROJECT_TTL_MS`, `GC_INTERVAL_MS`, and the `projectId()` hash function |
-| `src/events.js` | EventEmitter singleton — bridges MCP tool call lifecycle (`tool_start`/`tool_end`) and `connections_changed` to the GUI (directly when hosting, via `attach.js` uplink when attached) |
+| `src/gui.js` | Express REST API on port 4737 (the daemon process only). Serves the built Svelte app from `/public`, project-scoped connection/table/row CRUD routes, the `/api/host/*` uplink routes used by attached MCP processes, and the SSE stream (`/api/events`) for the live agent feed |
+| `src/attach.js` | Client-side uplink used by every MCP process: probes `/api/info`, registers this project with the GUI daemon, sends heartbeats, and forwards local tool events. `onHostGone` fires if the daemon disappears (e.g. restarted); `index.js` retries the probe/attach on an interval rather than racing to become host itself |
+| `src/registry.js` | `ProjectRegistry` — in-memory store, kept by the GUI daemon, of every attached project it knows about: registration/reconciliation of connections, heartbeat TTL + GC of stale projects, per-project connection lookup, and the `snapshot()`/`projects_changed` data sent to the GUI. A daemon with no editor sessions attached simply has zero projects — `getSelfProjectId()` returns `null` and the GUI renders an empty sidebar until something attaches |
+| `src/protocol.js` | Shared constants between the daemon and attached MCP processes: `APP`, `PROTOCOL_VERSION` (compatibility check), `HEARTBEAT_MS`, `PROJECT_TTL_MS`, `GC_INTERVAL_MS`, and the `projectId()` hash function |
+| `src/events.js` | EventEmitter singleton — bridges MCP tool call lifecycle (`tool_start`/`tool_end`) and `connections_changed` from `mcp.js` to `attach.js`'s uplink |
 
 ### Host/Attach Architecture
 
-Only one sqlmate-mcp process per machine binds the GUI port (`SQLMATE_PORT`, default 4737) — that process is the **host**. Every other process (e.g. sqlmate-mcp running for a second, third, ... project) becomes an **attached** client:
+The GUI is a standalone daemon (`node src/index.js gui`), not something an MCP session spins up for itself. Every `sqlmate-mcp` process that Claude Code/Zed launches (no args) is **attach-only**: it never binds the GUI port (`SQLMATE_PORT`, default 4737) and never opens a browser tab, no matter how many editor sessions start and stop throughout the day.
 
-1. On startup, `index.js` tries to bind the GUI port. If successful, it becomes the host and registers itself as a project with `self: true` (the self project is exempt from GC/heartbeat expiry).
-2. If the port is taken, it calls `probeHost()` (`src/attach.js`) to confirm the occupant is a compatible sqlmate-mcp host (`GET /api/info`, matching `PROTOCOL_VERSION`). If not compatible, it logs and continues without a GUI.
-3. If compatible, it calls `startAttach()`, which registers the project's connections with the host (`POST /api/host/register`), heartbeats every `HEARTBEAT_MS` (`POST /api/host/heartbeat`), and forwards `tool_start`/`tool_end` events (`POST /api/host/events`) so the shared GUI's live feed covers all attached projects.
-4. If the host goes away (heartbeat fails), the attached process's `onHostGone` callback fires and it re-runs `becomeHostOrAttach()` — racing to become the new host or attach to whichever process wins.
+1. On startup, an MCP process calls `probeHost()` (`src/attach.js`) against the GUI port to check for a compatible daemon (`GET /api/info`, matching `PROTOCOL_VERSION`).
+2. If found, it calls `startAttach()`, which registers the project's connections with the daemon (`POST /api/host/register`), heartbeats every `HEARTBEAT_MS` (`POST /api/host/heartbeat`), and forwards `tool_start`/`tool_end` events (`POST /api/host/events`) so the shared GUI's live feed covers all attached projects.
+3. If no daemon is reachable (or it's an incompatible version), the MCP process logs a one-time hint to stderr and keeps working with no GUI, retrying the probe/attach every 30s in the background — so starting the daemon later (or after it restarts) picks the session back up without restarting the editor.
+4. If a previously-attached daemon goes away (heartbeat fails), `onHostGone` fires and the MCP process goes back to step 3 — it never tries to become the host itself.
 
-The GUI's `/api/events` SSE stream and REST routes are project-scoped (`/api/projects/:projectId/...`) and fail closed on a missing/empty `projectId` by default. The unified dashboard opts into `/api/events?all=1`, which streams every project's `projects_changed` snapshot and all projects' tool events so one browser can show all projects at once (grouped by project in the sidebar). `?all=1` is the only way to get cross-project visibility — the scoped/fail-closed default stays for any other consumer. Only the process that binds the GUI port opens a browser tab; attached processes never do.
+The daemon itself (`gui` mode) just binds the GUI port, runs `ProjectRegistry` with no self project, and opens the browser once on startup (`SQLMATE_NO_OPEN=1` to suppress). Running `gui` again while one is already up detects the live daemon via `probeHost()` and just opens the browser to it instead of erroring. `gui --install-autostart` (Windows only) drops a hidden `.vbs` launcher in the Startup folder so the daemon starts once at login instead of being tied to any editor session's lifetime.
+
+The GUI's `/api/events` SSE stream and REST routes are project-scoped (`/api/projects/:projectId/...`) and fail closed on a missing/empty `projectId` by default. The unified dashboard opts into `/api/events?all=1`, which streams every project's `projects_changed` snapshot and all projects' tool events so one browser can show all projects at once (grouped by project in the sidebar). `?all=1` is the only way to get cross-project visibility — the scoped/fail-closed default stays for any other consumer.
 
 ### Frontend (`frontend/`)
 

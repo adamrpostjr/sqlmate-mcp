@@ -224,7 +224,7 @@ sqlmate-mcp gui --uninstall-autostart # remove the login item
 
 - If no daemon is running, an MCP process just logs a hint to stderr and keeps working without a GUI — it retries attaching in the background every 30s, so starting the daemon later (or after it restarts) picks the session back up without restarting your editor.
 - Running `sqlmate-mcp gui` again while one is already running just opens the browser to the existing instance instead of erroring.
-- `--install-autostart` drops a hidden startup shortcut (`%APPDATA%\...\Startup\sqlmate-gui.vbs`) that launches `sqlmate-mcp gui` at login with no visible console window.
+- `--install-autostart` drops a hidden startup shortcut (`%APPDATA%\...\Startup\sqlmate-gui.vbs`) that launches `sqlmate-mcp gui` at login with no visible console window. If the project lives on a drive that isn't attached yet at login (a mapped or slow-to-mount drive), it waits — checking every 3s, up to 5 minutes by default — instead of failing silently. Override with `--max-wait=<seconds>`, e.g. `sqlmate-mcp gui --install-autostart --max-wait=60`.
 
 Fully optional — without it, sqlmate-mcp behaves as a normal attach-only client and simply runs with no GUI until you start one.
 

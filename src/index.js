@@ -14,13 +14,6 @@ import { ProjectRegistry } from './registry.js'
 import { PROTOCOL_VERSION } from './protocol.js'
 
 const selfPath = fileURLToPath(import.meta.url)
-const mode = process.argv[2]
-
-if (mode === 'gui') {
-  await runGuiDaemon(process.argv.slice(3))
-} else {
-  await runMcpServer()
-}
 
 // ── GUI daemon: `node src/index.js gui` ──────────────────────────────────────
 // A long-lived process, independent of any single Claude Code session, that
@@ -28,7 +21,7 @@ if (mode === 'gui') {
 // started afterwards just attaches to it — no per-session host election, no
 // repeated browser tabs. See runMcpServer() below.
 async function runGuiDaemon(args) {
-  if (args.includes('--install-autostart')) return installAutostart()
+  if (args.includes('--install-autostart')) return installAutostart(args)
   if (args.includes('--uninstall-autostart')) return uninstallAutostart()
 
   const port = parseInt(process.env.SQLMATE_PORT) || 4737
@@ -83,19 +76,40 @@ function startupDir() {
 }
 const AUTOSTART_NAME = 'sqlmate-gui.vbs'
 
-function installAutostart() {
+function installAutostart(args = []) {
   if (process.platform !== 'win32') {
     process.stderr.write('[sqlmate] --install-autostart is only implemented for Windows. Wire up your own login item for other platforms.\n')
     process.exit(1)
   }
+  const maxWaitArg = args.find(a => a.startsWith('--max-wait='))
+  const maxWaitSeconds = maxWaitArg ? parseInt(maxWaitArg.split('=')[1]) || 300 : 300
+
   const dir = startupDir()
   const target = path.join(dir, AUTOSTART_NAME)
-  // WScript.Shell.Run with windowStyle 0 launches `node ... gui` fully hidden
-  // (no console flash) and doesn't wait for it to exit.
-  const vbs = `Set shell = CreateObject("WScript.Shell")\r\nshell.Run "node ""${selfPath}"" gui", 0, False\r\n`
+  // selfPath may live on a drive (e.g. a mapped/network F:) that isn't attached
+  // yet when the Startup folder runs at login. Poll for the script file to
+  // actually exist before launching, instead of firing immediately and
+  // silently failing against a not-yet-mounted drive. WScript.Shell.Run with
+  // windowStyle 0 then launches `node ... gui` fully hidden (no console
+  // flash) and doesn't wait for it to exit.
+  const vbs = [
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'Set shell = CreateObject("WScript.Shell")',
+    `target = "${selfPath}"`,
+    `maxWaitMs = ${maxWaitSeconds * 1000}`,
+    'waitedMs = 0',
+    'Do While (Not fso.FileExists(target)) And (waitedMs < maxWaitMs)',
+    '  WScript.Sleep 3000',
+    '  waitedMs = waitedMs + 3000',
+    'Loop',
+    'If fso.FileExists(target) Then',
+    '  shell.Run "node ""' + selfPath + '"" gui", 0, False',
+    'End If'
+  ].join('\r\n') + '\r\n'
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(target, vbs)
   process.stderr.write(`[sqlmate] Installed autostart: ${target}\n`)
+  process.stderr.write(`[sqlmate] It waits (up to ${maxWaitSeconds}s, checking every 3s) for ${selfPath} to become reachable before starting the daemon, so a slow-to-attach drive won't cause it to silently fail. Override with --max-wait=<seconds>.\n`)
   process.stderr.write('[sqlmate] The GUI daemon will now start automatically at login. Remove it with:\n')
   process.stderr.write(`  node ${selfPath} gui --uninstall-autostart\n`)
 }
@@ -210,4 +224,13 @@ async function runMcpServer() {
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+}
+
+// Dispatched last so every const/function declared above (e.g. AUTOSTART_NAME)
+// is already initialized before either mode can reference it.
+const mode = process.argv[2]
+if (mode === 'gui') {
+  await runGuiDaemon(process.argv.slice(3))
+} else {
+  await runMcpServer()
 }

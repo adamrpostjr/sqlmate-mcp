@@ -2,8 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { randomUUID } from 'crypto'
+import fs from 'fs'
+import path from 'path'
 import { getDriver, invalidateDriver } from './drivers.js'
 import emitter from './events.js'
+import { dumpDatabase, resolveDumpPath, ensureSqlmateGitignore, createDumpWriter } from './dump.js'
 import { parseConnectionInput, mergeProjectConnections, resolveConnection } from './connections.js'
 
 function ok(data) {
@@ -377,6 +380,86 @@ export async function startMcpServer(connections, projectRoot, { transport } = {
           message: `Write operation completed. ${result.affectedRows ?? '?'} row(s) affected.`
         })
       } catch (err) { emitError(ctx, err); return fail(err) }
+    }
+  )
+
+  server.tool(
+    'dump_database',
+    [
+      'Write a restorable SQL dump (schema and/or data) of a connection to a file on disk.',
+      'Use this to take a backup BEFORE risky writes or migrations (DELETE/UPDATE/DROP/ALTER, schema changes).',
+      'The dump is written to disk and is NOT returned; the result gives the file path, size and per-table row counts.',
+      'By default it goes to <project_root>/.sqlmate/dumps/ (auto-gitignored); pass output to choose a path.',
+      'Pure JS, no mysqldump/pg_dump needed. MySQL/Postgres/SQLite dump from a consistent snapshot; MSSQL is best-effort without one.',
+      'Views, routines and triggers are not included (SQLite triggers are). To restore, run the file with the database CLI (mysql, psql, sqlite3, sqlcmd).'
+    ].join(' '),
+    {
+      connectionId: z.string().describe('Connection ID from list_connections'),
+      tables: z.array(z.string()).optional().describe('Only dump these tables (default: all tables)'),
+      mode: z.enum(['full', 'schema', 'data']).optional().describe("'full' (default) = schema + data, 'schema' = DDL only, 'data' = INSERTs only"),
+      output: z.string().optional().describe('Output file path; relative paths resolve against the project root. Default: .sqlmate/dumps/<connectionId>-<timestamp>.sql'),
+      gzip: z.boolean().optional().describe('Gzip-compress the dump (default false; adds .gz to the default file name)'),
+      drop_existing: z.boolean().optional().describe('Emit DROP TABLE IF EXISTS before each CREATE (default true)'),
+      overwrite: z.boolean().optional().describe('Replace the output file if it already exists (default false)'),
+      project_root: z.string().optional().describe('Absolute path to the current project directory (same value passed to list_connections)')
+    },
+    async ({ connectionId, tables, mode = 'full', output, gzip = false, drop_existing = true, overwrite = false, project_root }) => {
+      const root = project_root ?? projectRoot
+      // Never put dump contents (or the output path's data) in the event args.
+      const ctx = emitStart('dump_database', connectionId, { connectionId, tables, mode }, root)
+      let session = null
+      let writer = null
+      try {
+        const conn = resolveConnection(connections, connectionId, root)
+        const driver = await getDriver(conn)
+        if (typeof driver.openDumpSession !== 'function') throw new Error(`dump_database is not supported for ${conn.type} connections`)
+
+        if (tables) {
+          const known = new Set(await driver.listTables())
+          const unknown = tables.filter(t => !known.has(t))
+          if (unknown.length) throw new Error(`Unknown table(s): ${unknown.join(', ')}. Available: ${[...known].join(', ')}`)
+        }
+
+        const { file, isDefault } = resolveDumpPath({ output, root, connectionId, gzip, now: new Date() })
+        if (!overwrite && fs.existsSync(file)) {
+          throw new Error(`Output file already exists: ${file} (pass overwrite: true to replace it)`)
+        }
+        if (isDefault) ensureSqlmateGitignore(root)
+
+        const startedAt = Date.now()
+        writer = createDumpWriter(file, { gzip, overwrite })
+        session = await driver.openDumpSession()
+        const { tables: dumped, skipped } = await dumpDatabase(session, {
+          tables,
+          mode,
+          dropExisting: drop_existing,
+          write: writer.write,
+          database: conn.database || (conn.path ? path.basename(conn.path) : '')
+        })
+        await session.close()
+        session = null
+        const bytes = await writer.finish()
+        writer = null
+
+        const notes = []
+        if (skipped.length) notes.push(`Skipped (not a dumpable base table in the default schema): ${skipped.join(', ')}.`)
+        if (conn.type === 'mssql') notes.push('MSSQL dumps are best-effort: no point-in-time snapshot, and reconstructed DDL may omit some column/index options.')
+        emitEnd(ctx, dumped)
+        return ok({
+          file,
+          bytes,
+          mode,
+          tables: dumped,
+          durationMs: Date.now() - startedAt,
+          ...(notes.length ? { note: notes.join(' ') } : {})
+        })
+      } catch (err) {
+        // Don't leave a half-written dump behind, and always release the snapshot connection.
+        if (session) await session.close().catch(() => {})
+        if (writer) await writer.abort().catch(() => {})
+        emitError(ctx, err)
+        return fail(err)
+      }
     }
   )
 

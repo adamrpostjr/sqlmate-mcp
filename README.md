@@ -36,7 +36,7 @@ _That's the whole setup. It reads your existing `.env` — no config files to wr
 
 Most database MCP servers give the AI tools and leave **you** in the dark. sqlmate-mcp does both halves:
 
-- 🤖 **For Claude** — 8 focused tools to inspect schemas, run queries, and make guarded writes.
+- 🤖 **For Claude** — 9 focused tools to inspect schemas, run queries, and make guarded writes.
 - 👀 **For you** — a browser GUI (run once as a background daemon, not per session) so you can watch what the agent touches, edit data by hand, and run your own SQL side by side.
 
 No API keys. No cloud. No `node-gyp`. It reads the config you already have.
@@ -174,8 +174,11 @@ A copy-paste starting point lives in [`docs/sqlmaterc-example.json`](docs/sqlmat
 | `run_query(connectionId, sql)` | Run a read-only query (SELECT, EXPLAIN, SHOW, PRAGMA) |
 | `explain_query(connectionId, sql, [analyze])` | Return the execution plan; `analyze` runs read-only statements for real timing |
 | `run_write(connectionId, sql)` | Run an INSERT, UPDATE, DELETE, or DDL statement |
+| `dump_database(connectionId, [tables], [mode], [output], [gzip])` | Write a restorable `.sql` backup (schema + data) to disk — pure JS, no `mysqldump`/`pg_dump` needed |
 
 > `run_write` runs a risk assessment first. Operations affecting all rows (no `WHERE`), `DROP`, `TRUNCATE`, or `ALTER…DROP COLUMN` pause and ask Claude to confirm with `confirm: true` before proceeding.
+
+> `dump_database` is meant to be called before risky writes or migrations. The dump goes to `.sqlmate/dumps/<connection>-<timestamp>.sql` in your project (a `.sqlmate/.gitignore` keeps it out of git) and only the file path and row counts are returned to Claude. Example: *"Back up the `orders` and `customers` tables, gzipped, before running this migration"* → `dump_database({ connectionId: "app", tables: ["orders", "customers"], gzip: true })`. MySQL, Postgres and SQLite dump from a consistent snapshot; MSSQL is best-effort. Views, routines and triggers are not included (SQLite triggers are).
 
 ---
 

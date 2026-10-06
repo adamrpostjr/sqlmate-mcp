@@ -22,15 +22,16 @@ function firstKeyword(sql) {
 const SAFE_READ = new Set(['SELECT', 'PRAGMA', 'EXPLAIN', 'SHOW', 'DESCRIBE', 'DESC', 'WITH'])
 const SAFE_WRITE = new Set(['INSERT', 'UPDATE', 'DELETE'])
 
-function esc(id) {
+export function esc(id) {
   return '`' + id.replace(/`/g, '``') + '`'
 }
 
-function escMssql(id) {
+export function escMssql(id) {
   return '[' + id.replace(/]/g, ']]') + ']'
 }
 
-function escSqlite(id) {
+// Also used for Postgres (both quote identifiers with double quotes)
+export function escSqlite(id) {
   return '"' + id.replace(/"/g, '""') + '"'
 }
 
@@ -140,6 +141,27 @@ async function buildMysqlDriver(conn) {
     },
     async getSchemaGraph() {
       return buildSchemaGraph(this)
+    },
+    // Dedicated connection inside a consistent read-only snapshot, so a dump of
+    // many tables reflects a single point in time even while the app writes.
+    async openDumpSession() {
+      const c = await pool.getConnection()
+      try {
+        // No SESSION keyword: applies to the next transaction only, so the
+        // pooled connection isn't left with altered defaults after release.
+        await c.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+        await c.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+      } catch (err) { c.release(); throw err }
+      // Strings keep dates, bigints and decimals lossless (no JS Date/number coercion).
+      const lossless = { dateStrings: true, supportBigNumbers: true, bigNumberStrings: true }
+      return {
+        dialect: 'mysql',
+        async query(sql, params) { const [rows] = await c.query(sql, params); return rows },
+        async queryRows(sql, params) { const [rows] = await c.query({ sql, ...lossless }, params); return rows },
+        async close() {
+          try { await c.query('COMMIT') } finally { c.release() }
+        }
+      }
     },
     async close() {
       await pool.end()
@@ -253,6 +275,31 @@ async function buildSqliteDriver(conn) {
     },
     async getSchemaGraph() {
       return buildSchemaGraph(this)
+    },
+    // A separate read-only connection (WAL gives it a stable snapshot) so a
+    // long dump never holds a transaction open on the handle the GUI and
+    // run_write share. :memory: databases can't be reopened, so they fall
+    // back to the shared handle.
+    async openDumpSession() {
+      let conn = db
+      let own = false
+      if (dbPath !== ':memory:') {
+        try { conn = new DatabaseSync(dbPath, { readOnly: true }); own = true } catch { conn = db }
+      }
+      conn.exec('BEGIN')
+      return {
+        dialect: 'sqlite',
+        async query(sql, params = []) { return conn.prepare(sql).all(...params) },
+        // BigInts so integers beyond 2^53 survive the trip into the dump file.
+        async queryRows(sql, params = []) {
+          const stmt = conn.prepare(sql)
+          stmt.setReadBigInts(true)
+          return stmt.all(...params)
+        },
+        async close() {
+          try { conn.exec('COMMIT') } finally { if (own) conn.close() }
+        }
+      }
     },
     async close() {
       db.close()
@@ -422,6 +469,18 @@ async function buildMssqlDriver(conn) {
     async getSchemaGraph() {
       return buildSchemaGraph(this)
     },
+    // Best-effort: SNAPSHOT isolation may not be enabled on the database, so
+    // this is a plain pooled request with NO point-in-time guarantee across
+    // tables. Writes landing mid-dump can make tables mutually inconsistent.
+    async openDumpSession() {
+      const run = async (sqlStr, params = []) => {
+        const req = pool.request()
+        params.forEach((v, i) => req.input(`p${i}`, v))
+        const result = await req.query(sqlStr)
+        return result.recordset ?? []
+      }
+      return { dialect: 'mssql', query: run, queryRows: run, async close() {} }
+    },
     async close() {
       await pool.close()
     }
@@ -558,6 +617,23 @@ async function buildPostgresDriver(conn) {
     },
     async getSchemaGraph() {
       return buildSchemaGraph(this)
+    },
+    async openDumpSession() {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+      } catch (err) { client.release(err); throw err }
+      // Identity parser: every value arrives as its raw text form (bytea hex,
+      // arrays, json, timestamps) which Postgres re-coerces on INSERT.
+      const rawTypes = { getTypeParser: () => (v) => v }
+      return {
+        dialect: 'postgres',
+        async query(sql, params) { return (await client.query(sql, params)).rows },
+        async queryRows(sql, params) { return (await client.query({ text: sql, values: params, types: rawTypes })).rows },
+        async close() {
+          try { await client.query('COMMIT') } finally { client.release() }
+        }
+      }
     },
     async close() {
       await pool.end()
